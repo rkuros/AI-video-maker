@@ -3,6 +3,8 @@ import 'dart:io';
 import 'dart:math';
 import 'package:path/path.dart' as path;
 import 'package:video_editor/core/models/models.dart';
+import 'package:video_editor/core/models/denoise_level.dart';
+import 'package:video_editor/core/models/denoise_level.dart';
 
 /// Engine for exporting timeline to video file using system FFmpeg.
 class ExportEngine {
@@ -1095,39 +1097,95 @@ class ExportEngine {
     final settings = DenoiseSettings.fromJson(effect.parameters);
     final filters = <String>[];
 
-    // hqdn3d (base temporal/spatial filter) - always included for fast preview
-    final luma = (settings.lumaStrength * 5).clamp(0.1, 5.0);
-    final chroma = (settings.chromaStrength * 5).clamp(0.1, 5.0);
-    final temporal = settings.temporalRadius.clamp(1, 5);
-    filters.add('hqdn3d=$luma:$chroma:$temporal:$temporal');
+    // Strategy: Use professional-grade filters similar to DaVinci Resolve
+    // - atadenoise: Adaptive Temporal Averaging (motion-aware, high quality)
+    // - chromanr: Chroma noise reduction (color noise specific)
+    // - hqdn3d: Fast temporal/spatial (fallback for fast preview)
 
-    // When fast preview is enabled, skip heavy filters for quicker startup.
     if (fastPreview) {
+      // Fast preview: Use lightweight hqdn3d only
+      final luma = (settings.lumaStrength * 5).clamp(0.1, 5.0);
+      final chroma = (settings.chromaStrength * 5).clamp(0.1, 5.0);
+      final temporal = settings.temporalRadius.clamp(1, 5);
+      filters.add('hqdn3d=$luma:$chroma:$temporal:$temporal');
       return filters.join(',');
     }
 
-    // nlmeans (non-local means) - high quality, preserves details
-    if (settings.useNlmeans) {
-      final strength = (settings.nlmeansStrength * 10).clamp(1.0, 10.0);
-      final patchSize = settings.nlmeansPatchSize.clamp(3, 15);
-      final researchSize = settings.nlmeansResearchSize.clamp(7, 31);
-      filters.add('nlmeans=s=$strength:p=$patchSize:r=$researchSize');
-    }
+    // Full quality export: Use DaVinci Resolve-level filters
+    final level = settings.level;
 
-    // bm3d (block-matching 3D) - highest quality FFmpeg filter
-    if (settings.useBm3d) {
-      final sigma = settings.bm3dSigma.clamp(1.0, 20.0);
-      filters.add('bm3d=sigma=$sigma');
-    }
+    switch (level) {
+      case DenoiseLevel.fast:
+        // Fast: hqdn3d only (real-time capable)
+        final luma = (settings.lumaStrength * 4).clamp(0.5, 4.0);
+        final chroma = (settings.chromaStrength * 3).clamp(0.5, 3.0);
+        final temporal = settings.temporalRadius.clamp(1, 4);
+        filters.add('hqdn3d=$luma:$chroma:$temporal:$temporal');
+        break;
 
-    // vaguedenoiser (wavelet-based) - for fine noise
-    if (settings.useVaguedenoiser) {
-      filters.add('vaguedenoiser=threshold=3:method=hard:nsteps=6');
-    }
+      case DenoiseLevel.balanced:
+        // Balanced: atadenoise (adaptive temporal, motion-aware)
+        // DaVinci Resolve uses similar temporal algorithms
+        final size = 7; // Analysis window size
+        final threshold = (settings.lumaStrength * 0.1).clamp(0.01, 0.2);
+        filters.add('atadenoise=0a=$threshold:0b=$threshold:s=$size');
 
-    // dctdnoiz (DCT-based) - for block artifacts
-    if (settings.useDctdnoiz) {
-      filters.add('dctdnoiz=sigma=15');
+        // Add light chroma noise reduction
+        final chromaThreshold = (settings.chromaStrength * 15).clamp(5.0, 20.0);
+        filters.add('chromanr=thres=$chromaThreshold:sizew=5:sizeh=5');
+        break;
+
+      case DenoiseLevel.high:
+        // High: Strong atadenoise + chromanr (professional grade)
+        final size = 9; // Larger analysis window
+        final threshold = (settings.lumaStrength * 0.15).clamp(0.02, 0.3);
+        filters.add('atadenoise=0a=$threshold:0b=$threshold:1a=$threshold:1b=$threshold:s=$size');
+
+        // Strong chroma noise reduction
+        final chromaThreshold = (settings.chromaStrength * 20).clamp(10.0, 30.0);
+        filters.add('chromanr=thres=$chromaThreshold:sizew=7:sizeh=7');
+        break;
+
+      case DenoiseLevel.maximum:
+        // Maximum: Multi-plane atadenoise + strong chromanr (DaVinci Resolve quality)
+        final size = 11; // Maximum analysis window
+        final lumaThreshold = (settings.lumaStrength * 0.2).clamp(0.03, 0.4);
+        final chromaPlaneThreshold = (settings.chromaStrength * 0.15).clamp(0.02, 0.3);
+
+        // All planes with adaptive temporal averaging
+        filters.add(
+          'atadenoise='
+          '0a=$lumaThreshold:0b=$lumaThreshold:'  // Luma plane
+          '1a=$chromaPlaneThreshold:1b=$chromaPlaneThreshold:'  // U chroma plane
+          '2a=$chromaPlaneThreshold:2b=$chromaPlaneThreshold:'  // V chroma plane
+          's=$size',
+        );
+
+        // Maximum chroma noise reduction
+        final chromaThreshold = (settings.chromaStrength * 25).clamp(15.0, 40.0);
+        filters.add('chromanr=thres=$chromaThreshold:sizew=9:sizeh=9');
+        break;
+
+      case DenoiseLevel.aiEnhanced:
+        // AI Enhanced: Future implementation with Core ML/Neural Engine
+        // For now, use maximum quality FFmpeg filters as fallback
+        final size = 11;
+        final lumaThreshold = (settings.lumaStrength * 0.2).clamp(0.03, 0.4);
+        final chromaPlaneThreshold = (settings.chromaStrength * 0.15).clamp(0.02, 0.3);
+
+        filters.add(
+          'atadenoise='
+          '0a=$lumaThreshold:0b=$lumaThreshold:'
+          '1a=$chromaPlaneThreshold:1b=$chromaPlaneThreshold:'
+          '2a=$chromaPlaneThreshold:2b=$chromaPlaneThreshold:'
+          's=$size',
+        );
+
+        final chromaThreshold = (settings.chromaStrength * 25).clamp(15.0, 40.0);
+        filters.add('chromanr=thres=$chromaThreshold:sizew=9:sizeh=9');
+
+        // TODO: Implement AI/Core ML enhancement for macOS Neural Engine
+        break;
     }
 
     return filters.join(',');
