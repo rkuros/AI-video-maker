@@ -65,6 +65,10 @@ class ExportEngine {
     final crf = _getQualityCRF(settings.quality);
     final audio = settings.audioSettings;
 
+    // Prefer GPU encoding when available (e.g., VideoToolbox on macOS).
+    final hardwareEncoder = await _detectHardwareEncoder();
+    final useHardware = hardwareEncoder != null;
+
     final mediaMap = {for (final item in mediaLibrary) item.id: item};
 
     // Build a ranged timeline (shifted so that [start] becomes 0:00).
@@ -177,6 +181,10 @@ class ExportEngine {
 
     final args = <String>[
       '-y',
+      if (useHardware) ...[
+        '-hwaccel',
+        'auto',
+      ],
       ...inputArgs,
       '-filter_complex',
       graph,
@@ -187,13 +195,35 @@ class ExportEngine {
       '-r',
       fps.toString(),
       '-c:v',
-      'libx264',
-      '-crf',
-      crf.toString(),
-      '-preset',
-      settings.videoPreset,
-      '-tune',
-      'zerolatency',
+      useHardware ? hardwareEncoder : 'libx264',
+    ];
+
+    if (useHardware) {
+      final bitrate = _getQualityBitrate(settings.quality, width, height);
+      args.addAll([
+        '-b:v',
+        bitrate,
+        '-maxrate',
+        bitrate,
+      ]);
+      if (hardwareEncoder == 'h264_videotoolbox') {
+        args.addAll([
+          '-allow_sw',
+          '1',
+        ]);
+      }
+    } else {
+      args.addAll([
+        '-crf',
+        crf.toString(),
+        '-preset',
+        settings.videoPreset,
+        '-tune',
+        'zerolatency',
+      ]);
+    }
+
+    args.addAll([
       '-pix_fmt',
       'yuv420p',
       '-g',
@@ -229,7 +259,7 @@ class ExportEngine {
       '-hls_segment_filename',
       segmentPattern,
       playlistPath,
-    ];
+    ]);
 
     final process = await Process.start(
       _ffmpeg,

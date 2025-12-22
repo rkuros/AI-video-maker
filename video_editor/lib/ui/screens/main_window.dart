@@ -29,13 +29,26 @@ class MainWindow extends ConsumerStatefulWidget {
 class _MainWindowState extends ConsumerState<MainWindow> {
   final _shortcutService = KeyboardShortcutService();
   final _exportEngine = ExportEngine();
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Focus(
-      autofocus: true,
-      onKeyEvent: _handleKeyEvent,
-      child: Scaffold(
+    return GestureDetector(
+      onTap: () {
+        // Request focus when clicking anywhere in the window
+        _focusNode.requestFocus();
+      },
+      child: Focus(
+        focusNode: _focusNode,
+        autofocus: true,
+        onKeyEvent: _handleKeyEvent,
+        child: Scaffold(
       appBar: AppBar(
         title: _buildTitle(),
         actions: [
@@ -110,6 +123,7 @@ class _MainWindowState extends ConsumerState<MainWindow> {
             child: _buildTimelinePanel(),
           ),
         ],
+      ),
       ),
       ),
     );
