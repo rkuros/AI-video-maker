@@ -800,6 +800,8 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
         sourceStart: clip.sourceStart,
         duration: clip.sourceDuration > Duration.zero ? clip.sourceDuration : clip.duration,
         effects: clip.effects,
+        inTransition: clip.inTransition,
+        outTransition: clip.outTransition,
       );
 
       final clipDuration =

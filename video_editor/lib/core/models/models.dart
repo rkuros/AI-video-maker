@@ -2,6 +2,7 @@
 
 export 'enums.dart';
 export 'media_info.dart';
+export 'denoise_backend.dart';
 export 'media_item.dart';
 export 'effect.dart';
 export 'clip.dart';

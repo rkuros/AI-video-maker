@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 import 'package:path/path.dart' as path;
 import 'package:video_editor/core/models/models.dart';
+import 'package:video_editor/core/platform/coreml_denoise.dart';
 
 /// Engine for exporting timeline to video file using system FFmpeg.
 class ExportEngine {
@@ -299,147 +300,272 @@ class ExportEngine {
       throw Exception('Timeline has zero duration');
     }
 
-    final outputDir = Directory(path.dirname(settings.outputPath));
-    if (!await outputDir.exists()) {
-      await outputDir.create(recursive: true);
-    }
+    final prepared = await _prepareTimelineForCoreMlDenoise(timeline, mediaLibrary);
+    final effectiveTimeline = prepared.$1;
+    final effectiveLibrary = prepared.$2;
+    final cleanupDirs = prepared.$3;
 
-    final width = settings.resolution.width;
-    final height = settings.resolution.height;
-    final fps = settings.frameRate;
-    final crf = _getQualityCRF(settings.quality);
-    final audio = settings.audioSettings;
+    try {
+      final outputDir = Directory(path.dirname(settings.outputPath));
+      if (!await outputDir.exists()) {
+        await outputDir.create(recursive: true);
+      }
+
+      final width = settings.resolution.width;
+      final height = settings.resolution.height;
+      final fps = settings.frameRate;
+      final crf = _getQualityCRF(settings.quality);
+      final audio = settings.audioSettings;
+
+      final mediaMap = {for (final item in effectiveLibrary) item.id: item};
+      final inputs = <_InputSpec>[];
+      var inputIndex = 0;
+
+      for (final track in effectiveTimeline.tracks) {
+        for (final clip in track.clips) {
+          final item = mediaMap[clip.mediaItemId];
+          if (item == null) {
+            throw Exception('Missing media for clip: ${clip.mediaItemId}');
+          }
+          final clipDuration = _clipDuration(clip);
+          if (clipDuration <= Duration.zero) {
+            continue;
+          }
+          inputs.add(
+            _InputSpec(
+              inputIndex: inputIndex,
+              mediaItem: item,
+              clip: clip,
+              track: track,
+            ),
+          );
+          inputIndex += 1;
+        }
+      }
+
+      if (inputs.isEmpty) {
+        throw Exception('No clips to export');
+      }
+
+      // Probe audio stream existence asynchronously to avoid blocking the UI isolate.
+      final audioAvailability = <String, bool>{};
+      final toProbe = inputs
+          .map((s) => s.mediaItem.filePath)
+          .where((p) => audioAvailability[p] == null)
+          .toSet()
+          .toList();
+      await Future.wait(
+        toProbe.map((p) async {
+          audioAvailability[p] = await _hasAudioStreamAsync(p);
+        }),
+      );
+
+      final inputArgs = <String>[];
+      for (final spec in inputs) {
+        if (spec.mediaItem.type == MediaType.image) {
+          inputArgs.addAll([
+            '-loop',
+            '1',
+            '-t',
+            _seconds(spec.clipDuration),
+          ]);
+        }
+        inputArgs.addAll(['-i', spec.mediaItem.filePath]);
+      }
+
+      final graph = _buildFilterGraph(
+        inputs: inputs,
+        timeline: effectiveTimeline,
+        duration: duration,
+        width: width,
+        height: height,
+        fps: fps,
+        audioAvailability: audioAvailability,
+      );
+
+      // Detect hardware encoder
+      final hardwareEncoder = await _detectHardwareEncoder();
+      final useHardware = hardwareEncoder != null;
+
+      final args = <String>[
+        '-y',
+        ...inputArgs,
+        '-filter_complex',
+        graph,
+        '-map',
+        '[vout]',
+        '-map',
+        '[aout]',
+        '-r',
+        fps.toString(),
+        '-c:v',
+        useHardware ? hardwareEncoder : 'libx264',
+      ];
+
+      // Add quality settings based on encoder type
+      if (useHardware) {
+        // Hardware encoders typically use bitrate-based encoding
+        final bitrate = _getQualityBitrate(settings.quality, width, height);
+        args.addAll([
+          '-b:v',
+          bitrate,
+        ]);
+
+        // VideoToolbox works best with minimal extra settings
+        // Let it auto-detect the best profile and level based on input
+      } else {
+        // Software encoder uses CRF
+        args.addAll([
+          '-crf',
+          crf.toString(),
+          '-preset',
+          settings.videoPreset,
+        ]);
+      }
+
+      args.addAll([
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        audio.codec,
+        '-b:a',
+        _bitrateArg(audio.bitrate),
+        '-ar',
+        audio.sampleRate.toString(),
+        '-ac',
+        audio.channels.toString(),
+        '-movflags',
+        '+faststart',
+        '-progress',
+        'pipe:1',
+        '-nostats',
+        settings.outputPath,
+      ]);
+
+      await _runWithProgress(
+        args,
+        duration,
+        onProgress,
+      );
+    } finally {
+      for (final dir in cleanupDirs) {
+        try {
+          await dir.delete(recursive: true);
+        } catch (_) {}
+      }
+    }
+  }
+
+  Future<(Timeline, List<MediaItem>, List<Directory>)> _prepareTimelineForCoreMlDenoise(
+    Timeline timeline,
+    List<MediaItem> mediaLibrary,
+  ) async {
+    if (!Platform.isMacOS) return (timeline, mediaLibrary, const <Directory>[]);
 
     final mediaMap = {for (final item in mediaLibrary) item.id: item};
-    final inputs = <_InputSpec>[];
-    var inputIndex = 0;
+
+    var needsCoreMl = false;
+    for (final track in timeline.tracks) {
+      for (final clip in track.clips) {
+        for (final effect in clip.effects) {
+          if (effect.type != 'auto_denoise' && effect.type != 'low_light_denoise') {
+            continue;
+          }
+          final s = DenoiseSettings.fromJson(effect.parameters);
+          final wantsCoreMl = s.backend == DenoiseBackend.coreML || s.useAiModel;
+          if (wantsCoreMl && (s.aiModelPath?.isNotEmpty ?? false)) {
+            needsCoreMl = true;
+            break;
+          }
+        }
+        if (needsCoreMl) break;
+      }
+      if (needsCoreMl) break;
+    }
+    if (!needsCoreMl) {
+      return (timeline, mediaLibrary, const <Directory>[]);
+    }
+
+    final tempDir = await Directory.systemTemp.createTemp('video_editor_coreml_');
+
+    final proxyCache = <String, MediaItem>{};
+    final updatedMedia = [...mediaLibrary];
+    final updatedTracks = <Track>[];
 
     for (final track in timeline.tracks) {
+      final updatedClips = <Clip>[];
       for (final clip in track.clips) {
         final item = mediaMap[clip.mediaItemId];
         if (item == null) {
-          throw Exception('Missing media for clip: ${clip.mediaItemId}');
-        }
-        final clipDuration = _clipDuration(clip);
-        if (clipDuration <= Duration.zero) {
+          updatedClips.add(clip);
           continue;
         }
-        inputs.add(
-          _InputSpec(
-            inputIndex: inputIndex,
-            mediaItem: item,
-            clip: clip,
-            track: track,
+
+        DenoiseSettings? denoiseSettings;
+        for (final effect in clip.effects) {
+          if (effect.type != 'auto_denoise' && effect.type != 'low_light_denoise') {
+            continue;
+          }
+          final s = DenoiseSettings.fromJson(effect.parameters);
+          final wantsCoreMl = s.backend == DenoiseBackend.coreML || s.useAiModel;
+          if (wantsCoreMl && (s.aiModelPath?.isNotEmpty ?? false)) {
+            denoiseSettings = s;
+            break;
+          }
+        }
+
+        if (denoiseSettings == null) {
+          updatedClips.add(clip);
+          continue;
+        }
+
+        final modelPath = denoiseSettings.aiModelPath!;
+        final modelExists = File(modelPath).existsSync() || Directory(modelPath).existsSync();
+        if (!modelExists) {
+          updatedClips.add(clip);
+          continue;
+        }
+
+        final key = '${item.filePath}|${clip.sourceStart.inMilliseconds}|'
+            '${clip.sourceDuration.inMilliseconds}|$modelPath';
+
+        final proxy = proxyCache[key] ??
+            MediaItem(
+              name: '${item.name} (CoreML denoise)',
+              filePath: path.join(tempDir.path, '${clip.id}.mp4'),
+              type: MediaType.video,
+              duration: clip.sourceDuration,
+            );
+
+        if (proxyCache[key] == null) {
+          await CoreMlDenoise.denoiseVideo(
+            inputPath: item.filePath,
+            outputPath: proxy.filePath,
+            sourceStart: clip.sourceStart,
+            duration: clip.sourceDuration,
+            modelPath: modelPath,
+          );
+          proxyCache[key] = proxy;
+          updatedMedia.add(proxy);
+        }
+
+        final remainingEffects = clip.effects
+            .where((e) => e.type != 'auto_denoise' && e.type != 'low_light_denoise')
+            .toList();
+
+        updatedClips.add(
+          clip.copyWith(
+            mediaItemId: proxy.id,
+            sourceStart: Duration.zero,
+            sourceDuration: clip.sourceDuration,
+            effects: remainingEffects,
           ),
         );
-        inputIndex += 1;
       }
+      updatedTracks.add(track.copyWith(clips: updatedClips));
     }
 
-    if (inputs.isEmpty) {
-      throw Exception('No clips to export');
-    }
-
-    // Probe audio stream existence asynchronously to avoid blocking the UI isolate.
-    final audioAvailability = <String, bool>{};
-    final toProbe = inputs
-        .map((s) => s.mediaItem.filePath)
-        .where((p) => audioAvailability[p] == null)
-        .toSet()
-        .toList();
-    await Future.wait(
-      toProbe.map((p) async {
-        audioAvailability[p] = await _hasAudioStreamAsync(p);
-      }),
-    );
-
-    final inputArgs = <String>[];
-    for (final spec in inputs) {
-      if (spec.mediaItem.type == MediaType.image) {
-        inputArgs.addAll([
-          '-loop',
-          '1',
-          '-t',
-          _seconds(spec.clipDuration),
-        ]);
-      }
-      inputArgs.addAll(['-i', spec.mediaItem.filePath]);
-    }
-
-    final graph = _buildFilterGraph(
-      inputs: inputs,
-      timeline: timeline,
-      duration: duration,
-      width: width,
-      height: height,
-      fps: fps,
-      audioAvailability: audioAvailability,
-    );
-
-    // Detect hardware encoder
-    final hardwareEncoder = await _detectHardwareEncoder();
-    final useHardware = hardwareEncoder != null;
-
-    final args = <String>[
-      '-y',
-      ...inputArgs,
-      '-filter_complex',
-      graph,
-      '-map',
-      '[vout]',
-      '-map',
-      '[aout]',
-      '-r',
-      fps.toString(),
-      '-c:v',
-      useHardware ? hardwareEncoder : 'libx264',
-    ];
-
-    // Add quality settings based on encoder type
-    if (useHardware) {
-      // Hardware encoders typically use bitrate-based encoding
-      final bitrate = _getQualityBitrate(settings.quality, width, height);
-      args.addAll([
-        '-b:v',
-        bitrate,
-      ]);
-
-      // VideoToolbox works best with minimal extra settings
-      // Let it auto-detect the best profile and level based on input
-    } else {
-      // Software encoder uses CRF
-      args.addAll([
-        '-crf',
-        crf.toString(),
-        '-preset',
-        settings.videoPreset,
-      ]);
-    }
-
-    args.addAll([
-      '-pix_fmt',
-      'yuv420p',
-      '-c:a',
-      audio.codec,
-      '-b:a',
-      _bitrateArg(audio.bitrate),
-      '-ar',
-      audio.sampleRate.toString(),
-      '-ac',
-      audio.channels.toString(),
-      '-movflags',
-      '+faststart',
-      '-progress',
-      'pipe:1',
-      '-nostats',
-      settings.outputPath,
-    ]);
-
-    await _runWithProgress(
-      args,
-      duration,
-      onProgress,
-    );
+    return (timeline.copyWith(tracks: updatedTracks), updatedMedia, [tempDir]);
   }
 
   Future<void> _assertFfmpegAvailable() async {
@@ -971,23 +1097,25 @@ class ExportEngine {
             }
 
             // Report progress when we have time information
-            if (currentTimeMs != null && currentTimeMs! > 0) {
+            if (currentTimeMs != null && currentTimeMs! > 0 && totalMs > 0) {
               final progressValue = (currentTimeMs! / totalMs).clamp(0.0, 1.0);
               final currentPercentage = (progressValue * 100).round();
 
               // Only report progress if percentage changed significantly (at least 1%)
               // This reduces UI updates and makes progress smoother
-              if (currentPercentage != lastReportedPercentage) {
+              if (currentPercentage != lastReportedPercentage && currentPercentage >= 0) {
                 lastReportedPercentage = currentPercentage;
 
                 final elapsed = DateTime.now().difference(startTime);
 
                 Duration? estimatedRemaining;
-                if (progressValue > 0.01) {
-                  final totalEstimated = elapsed.inMilliseconds / progressValue;
-                  estimatedRemaining = Duration(
-                    milliseconds: (totalEstimated - elapsed.inMilliseconds).round(),
-                  );
+                if (progressValue > 0.001 && progressValue < 1.0) {
+                  // Calculate remaining time: (elapsed / progress) * (1 - progress)
+                  // This is more stable than: (elapsed / progress) - elapsed
+                  final remainingRatio = (1.0 - progressValue) / progressValue;
+                  final remainingMs = (elapsed.inMilliseconds * remainingRatio).round();
+                  // Clamp to reasonable range (0 to 24 hours)
+                  estimatedRemaining = Duration(milliseconds: remainingMs.clamp(0, 86400000));
                 }
 
                 onProgress(ExportProgress(
@@ -1080,19 +1208,65 @@ class ExportEngine {
         return '';
       case 'low_light_denoise':
         final settings = DenoiseSettings.fromJson(effect.parameters);
-        final luma = (settings.lumaStrength * 5).clamp(0.1, 5.0);
-        final chroma = (settings.chromaStrength * 5).clamp(0.1, 5.0);
-        final temporal = settings.temporalRadius.clamp(1, 5);
-        return 'hqdn3d=$luma:$chroma:$temporal:$temporal';
+        return _buildDenoiseFilterChainFromSettings(
+          settings,
+          fastPreview: fastPreview,
+        );
       case 'auto_denoise':
-        return _buildDenoiseFilterChain(effect, fastPreview: fastPreview);
+        final settings = DenoiseSettings.fromJson(effect.parameters);
+        return _buildDenoiseFilterChainFromSettings(
+          settings,
+          fastPreview: fastPreview,
+        );
       default:
         return '';
     }
   }
 
-  String _buildDenoiseFilterChain(Effect effect, {required bool fastPreview}) {
-    final settings = DenoiseSettings.fromJson(effect.parameters);
+  String _buildCoreImageNoiseReductionFilter(DenoiseSettings settings) {
+    // Core Image CINoiseReduction:
+    // - inputNoiseLevel: 0..0.1 (default 0.02)
+    // - inputSharpness: 0..2 (default 0.4)
+    final noiseLevel =
+        (settings.strength * settings.lumaStrength * 0.1).clamp(0.0, 0.1);
+
+    final sharpness = settings.preserveDetails
+        ? (0.4 + (1.0 - settings.strength) * 1.2).clamp(0.0, 2.0)
+        : (0.2 + (1.0 - settings.strength) * 0.6).clamp(0.0, 2.0);
+
+    return "coreimage=filter='CINoiseReduction"
+        "@inputNoiseLevel=${noiseLevel.toStringAsFixed(4)}"
+        "@inputSharpness=${sharpness.toStringAsFixed(3)}'";
+  }
+
+  String _buildDenoiseFilterChainFromSettings(
+    DenoiseSettings settings, {
+    required bool fastPreview,
+  }) {
+    if (Platform.isMacOS && settings.backend == DenoiseBackend.coreImage) {
+      if (fastPreview) {
+        return _buildCoreImageNoiseReductionFilter(settings);
+      }
+
+      final luma = (settings.lumaStrength * 5).clamp(0.1, 5.0);
+      final chroma = (settings.chromaStrength * 5).clamp(0.1, 5.0);
+      final temporal = settings.temporalRadius.clamp(1, 5);
+
+      return [
+        'hqdn3d=$luma:$chroma:$temporal:$temporal',
+        _buildCoreImageNoiseReductionFilter(settings),
+      ].join(',');
+    }
+
+    if (settings.backend == DenoiseBackend.coreML) {
+      // Core ML denoise is executed as an offline pre-render step; fall back to a
+      // lightweight temporal/spatial filter when running in FFmpeg graphs.
+      final luma = (settings.lumaStrength * 5).clamp(0.1, 5.0);
+      final chroma = (settings.chromaStrength * 5).clamp(0.1, 5.0);
+      final temporal = settings.temporalRadius.clamp(1, 5);
+      return 'hqdn3d=$luma:$chroma:$temporal:$temporal';
+    }
+
     final filters = <String>[];
 
     // hqdn3d (base temporal/spatial filter) - always included for fast preview

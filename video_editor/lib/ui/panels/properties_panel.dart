@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:video_editor/core/logic/selection_provider.dart';
 import 'package:video_editor/core/logic/transition_provider.dart';
 import 'package:video_editor/core/logic/audio_provider.dart';
@@ -822,6 +825,108 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
           ),
 
           const SizedBox(height: 16),
+
+          _buildLabel('Backend'),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<DenoiseBackend>(
+            value: settings.backend,
+            items: [
+              const DropdownMenuItem(
+                value: DenoiseBackend.ffmpeg,
+                child: Text('FFmpeg (CPU)'),
+              ),
+              if (Platform.isMacOS)
+                const DropdownMenuItem(
+                  value: DenoiseBackend.coreImage,
+                  child: Text('Core Image (GPU)'),
+                ),
+              if (Platform.isMacOS)
+                const DropdownMenuItem(
+                  value: DenoiseBackend.coreML,
+                  child: Text('Core ML (NPU/GPU)'),
+                ),
+            ],
+            onChanged: (value) {
+              if (value == null) return;
+              applySettings(
+                (current) => current.copyWith(
+                  backend: value,
+                  useAiModel: value == DenoiseBackend.coreML,
+                  aiModelPath: value == DenoiseBackend.coreML
+                      ? current.aiModelPath
+                      : null,
+                ),
+              );
+            },
+            decoration: const InputDecoration(
+              isDense: true,
+              border: OutlineInputBorder(),
+            ),
+          ),
+
+          if (Platform.isMacOS && settings.backend == DenoiseBackend.coreImage) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Core Image uses GPU for spatial denoise. Temporal denoise is still applied via FFmpeg (hqdn3d).',
+              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+            ),
+          ],
+
+          if (Platform.isMacOS && settings.backend == DenoiseBackend.coreML) ...[
+            const SizedBox(height: 12),
+            _buildLabel('Core ML Model'),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    settings.aiModelPath?.isNotEmpty == true
+                        ? settings.aiModelPath!
+                        : 'No model selected',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: settings.aiModelPath?.isNotEmpty == true
+                          ? Colors.grey[800]
+                          : Colors.grey[600],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () async {
+                    final picked = await FilePicker.platform.pickFiles(
+                      type: FileType.custom,
+                      allowedExtensions: const ['mlmodel', 'mlpackage', 'mlmodelc'],
+                    );
+                    final path = picked?.files.single.path;
+                    if (path == null) return;
+                    applySettings((current) => current.copyWith(aiModelPath: path));
+                  },
+                  child: const Text('Choose'),
+                ),
+                if (settings.aiModelPath?.isNotEmpty == true)
+                  TextButton(
+                    onPressed: () {
+                      applySettings(
+                        (current) => current.copyWith(
+                          aiModelPath: null,
+                          backend: DenoiseBackend.ffmpeg,
+                          useAiModel: false,
+                        ),
+                      );
+                    },
+                    child: const Text('Clear'),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Core ML denoise runs as an offline pre-render step (export & effect preview). Timeline real-time preview falls back to FFmpeg/Core Image.',
+              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+            ),
+          ],
 
           // Master Strength Slider
           _buildLabel('Strength: ${(settings.strength * 100).toInt()}%'),
