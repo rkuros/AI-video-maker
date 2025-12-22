@@ -173,7 +173,7 @@ class ExportEngine {
       height: height,
       fps: fps,
       audioAvailability: audioAvailability,
-      fastPreview: true,
+      fastPreview: false,
     );
 
     final sessionDir = await Directory.systemTemp.createTemp('video_editor_hls_');
@@ -1095,7 +1095,7 @@ class ExportEngine {
     final temporal = settings.temporalRadius.clamp(1, 5);
     filters.add('hqdn3d=$luma:$chroma:$temporal:$temporal');
 
-    // Streaming preview must start quickly; skip heavy filters.
+    // When fast preview is enabled, skip heavy filters for quicker startup.
     if (fastPreview) {
       return filters.join(',');
     }

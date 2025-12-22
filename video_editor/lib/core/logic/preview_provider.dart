@@ -734,8 +734,8 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
 
       // Wait for playlist to appear and include at least one segment.
       //
-      // We aim to start within ~5s, but some effects (e.g. heavy denoise) can
-      // delay the first segment. Don't throw at 5s; keep waiting up to 15s.
+      // Some effects (e.g. heavy denoise) can delay the first segment.
+      // Don't throw at 5s; keep waiting up to 60s.
       final readyFast = await _waitForHlsReady(
         session.playlistPath,
         timeout: const Duration(seconds: 5),
@@ -752,10 +752,10 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       if (!readyFast) {
         final readySlow = await _waitForHlsReady(
           session.playlistPath,
-          timeout: const Duration(seconds: 10),
+          timeout: const Duration(seconds: 55),
           onTick: (elapsed) {
             // Continue to show progress without hitting 100% until ready.
-            final p = (0.9 + (elapsed.inMilliseconds / 10000.0) * 0.09)
+            final p = (0.9 + (elapsed.inMilliseconds / 55000.0) * 0.09)
                 .clamp(0.9, 0.99);
             onProgress?.call(
               ExportProgress(
@@ -766,7 +766,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
           },
         );
         if (!readySlow) {
-          throw Exception('HLS playlist not ready within 15s');
+          throw Exception('HLS playlist not ready within 60s');
         }
       }
 

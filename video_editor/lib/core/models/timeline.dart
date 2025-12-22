@@ -143,8 +143,8 @@ class Timeline {
 
     final remainingClips = track.clips.where((c) => c.id != clipId).toList();
 
-    final clipDuration =
-        clip.sourceDuration > Duration.zero ? clip.sourceDuration : clip.duration;
+    // Use the actual clip duration (which reflects trimming), not sourceDuration
+    final clipDuration = clip.duration;
     final moved = clip.copyWith(
       startTime: desiredStart,
       endTime: desiredStart + clipDuration,
@@ -204,7 +204,8 @@ class Timeline {
   }
 
   Track _insertClipWithoutTrimming(Track track, Clip clip) {
-    final clipDuration = _clipDurationForInsert(clip);
+    // Use the actual clip duration (respects trimming)
+    final clipDuration = clip.duration;
     var desiredStart = clip.startTime;
     if (desiredStart < Duration.zero) desiredStart = Duration.zero;
 
@@ -353,7 +354,8 @@ class Timeline {
       final allowedOverlap = _maxAllowedOverlap(previous, current);
       final minStart = currentEnd - allowedOverlap;
       if (current.startTime < minStart) {
-        final d = _clipDurationForInsert(current);
+        // Use the actual clip duration (respects trimming)
+        final d = current.duration;
         final shiftedStart = minStart < Duration.zero ? Duration.zero : minStart;
         final shifted = current.copyWith(
           startTime: shiftedStart,
