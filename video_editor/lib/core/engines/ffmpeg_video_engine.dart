@@ -13,6 +13,9 @@ class FFmpegVideoEngine implements VideoEngine {
   static const _ffmpeg = 'ffmpeg';
   static const _ffprobe = 'ffprobe';
 
+  String? _cachedHardwareEncoder;
+  bool _hardwareEncoderChecked = false;
+
   @override
   Future<void> loadVideo(String filePath) async {
     final file = File(filePath);
@@ -127,6 +130,9 @@ class FFmpegVideoEngine implements VideoEngine {
         .where((f) => f.trim().isNotEmpty)
         .join(',');
 
+    final hardwareEncoder = await _detectHardwareEncoder();
+    final useHardware = hardwareEncoder != null;
+
     final args = <String>[
       '-y',
       '-ss',
@@ -137,11 +143,22 @@ class FFmpegVideoEngine implements VideoEngine {
       inputPath,
       if (chain.isNotEmpty) ...['-vf', chain],
       '-c:v',
-      'libx264',
-      '-preset',
-      'veryfast',
-      '-crf',
-      '23',
+      useHardware ? hardwareEncoder : 'libx264',
+      if (useHardware) ...[
+        '-b:v',
+        '4M',
+        '-maxrate',
+        '4M',
+        if (hardwareEncoder == 'h264_videotoolbox') ...[
+          '-allow_sw',
+          '1',
+        ],
+      ] else ...[
+        '-preset',
+        'veryfast',
+        '-crf',
+        '23',
+      ],
       '-pix_fmt',
       'yuv420p',
       '-c:a',
@@ -154,6 +171,42 @@ class FFmpegVideoEngine implements VideoEngine {
     ];
 
     await _run(_ffmpeg, args);
+  }
+
+  Future<String?> _detectHardwareEncoder() async {
+    if (_hardwareEncoderChecked) {
+      return _cachedHardwareEncoder;
+    }
+
+    _hardwareEncoderChecked = true;
+
+    try {
+      final result = await Process.run(_ffmpeg, [
+        '-hide_banner',
+        '-encoders',
+      ]);
+
+      if (result.exitCode != 0) {
+        return null;
+      }
+
+      final output = result.stdout as String;
+      final encodersToTry = [
+        'h264_videotoolbox', // macOS VideoToolbox
+        'h264_nvenc', // NVIDIA GPU
+        'h264_qsv', // Intel Quick Sync Video
+        'h264_vaapi', // Linux VA-API
+      ];
+
+      for (final encoder in encodersToTry) {
+        if (output.contains(encoder)) {
+          _cachedHardwareEncoder = encoder;
+          return encoder;
+        }
+      }
+    } catch (_) {}
+
+    return null;
   }
 
   @override
