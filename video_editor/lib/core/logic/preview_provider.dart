@@ -128,6 +128,8 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
   StreamSubscription<Duration?>? _durationSub;
 
   HlsPreviewSession? _hlsSession;
+  final Map<String, HlsPreviewSession> _hlsCache = {};
+  static const int _maxCachedHlsStreams = 2;
   Timer? _seekDebounce;
   Duration? _pendingSeek;
   Timeline? _lastStreamTimeline;
@@ -194,20 +196,50 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     }
   }
 
-  Future<void> _stopTimelineStream() async {
+  String _hlsCacheKey({
+    required Timeline timeline,
+    required enums.PreviewQualityPreset preset,
+    required Duration startPosition,
+  }) {
+    // Cache is only valid while the timeline is unchanged; invalidateTimelinePreview clears it.
+    // Include startPosition for seek/restart caching.
+    final startMs = startPosition.inMilliseconds < 0 ? 0 : startPosition.inMilliseconds;
+    return '${timeline.id}|${preset.name}|$startMs';
+  }
+
+  Future<void> clearTimelinePreviewCache() async {
+    _seekDebounce?.cancel();
+    _seekDebounce = null;
+    _pendingSeek = null;
+    _hlsSession = null;
+    _lastStreamTimeline = null;
+    _lastStreamMediaLibrary = null;
+
+    final sessions = List<HlsPreviewSession>.from(_hlsCache.values);
+    _hlsCache.clear();
+    for (final s in sessions) {
+      try {
+        await s.stop();
+      } catch (_) {}
+    }
+
+    state = state.copyWith(
+      isTimelineStreaming: false,
+      timelinePreviewPath: null,
+      currentVideoPath: null,
+      playbackVideoPath: null,
+      timelineStreamStartOffset: Duration.zero,
+    );
+  }
+
+  Future<void> _detachTimelineStream() async {
     _seekDebounce?.cancel();
     _seekDebounce = null;
     _pendingSeek = null;
 
-    final session = _hlsSession;
     _hlsSession = null;
     _lastStreamTimeline = null;
     _lastStreamMediaLibrary = null;
-    if (session != null) {
-      try {
-        await session.stop();
-      } catch (_) {}
-    }
   }
 
   void _scheduleTimelineStreamRestart(
@@ -445,7 +477,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     );
 
     try {
-      await _stopTimelineStream();
+      await _detachTimelineStream();
       await _cleanupEffectPreviewTemps();
       await _cleanupPreviewProxyTemps();
 
@@ -534,7 +566,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
 
   /// Unload current video
   Future<void> unloadVideo() async {
-    await _stopTimelineStream();
+    await _detachTimelineStream();
 
     state = state.copyWith(
       isPlaying: false,
@@ -592,7 +624,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
 
     // Otherwise, just stop any pending stream state; the next Play will start
     // with the new preset.
-    await _stopTimelineStream();
+    await _detachTimelineStream();
     state = state.copyWith(
       isTimelineStreaming: false,
       timelineStreamStartOffset: Duration.zero,
@@ -725,6 +757,11 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
 
     final effectivePreset = preset ?? state.timelinePreviewPreset;
     final start = startPosition ?? timeline.currentPosition;
+    final cacheKey = _hlsCacheKey(
+      timeline: timeline,
+      preset: effectivePreset,
+      startPosition: start,
+    );
 
     state = state.copyWith(
       isLoading: true,
@@ -733,7 +770,32 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       isTimelineStreaming: true,
     );
 
-    await _stopTimelineStream();
+    // If we already have a cached stream for this exact request, reuse it.
+    final cached = _hlsCache[cacheKey];
+    if (cached != null && await File(cached.playlistPath).exists()) {
+      _ensurePlayerInitialized();
+      _hlsSession = cached;
+      _lastStreamTimeline = timeline;
+      _lastStreamMediaLibrary = List<MediaItem>.from(mediaLibrary);
+
+      final player = _player!;
+      await player.open(Media(cached.playlistPath), play: false);
+      await player.setRate(state.speed.value);
+
+      state = state.copyWith(
+        isLoading: false,
+        timelinePreviewPath: cached.playlistPath,
+        currentVideoPath: cached.playlistPath,
+        playbackVideoPath: cached.playlistPath,
+        isTimelineStreaming: true,
+        timelineStreamStartOffset: cached.startOffset,
+        isEffectPreview: false,
+        effectPreviewPath: null,
+      );
+      return;
+    }
+
+    await _detachTimelineStream();
     await pause();
     _ensurePlayerInitialized();
 
@@ -757,6 +819,16 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
         startPosition: start,
       );
       _hlsSession = session;
+      _hlsCache[cacheKey] = session;
+      while (_hlsCache.length > _maxCachedHlsStreams) {
+        final oldestKey = _hlsCache.keys.first;
+        final toEvict = _hlsCache.remove(oldestKey);
+        if (toEvict != null) {
+          try {
+            await toEvict.stop();
+          } catch (_) {}
+        }
+      }
 
       // Wait for playlist to appear and include at least one segment.
       //
@@ -831,7 +903,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
 
   /// Invalidate timeline preview when timeline is modified
   void invalidateTimelinePreview() {
-    _stopTimelineStream();
+    unawaited(clearTimelinePreviewCache());
 
     // Clear the timeline preview path so it will be regenerated on next play
     state = state.copyWith(
@@ -848,7 +920,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     // Best-effort cleanup.
     _cleanupEffectPreviewTemps();
     _cleanupPreviewProxyTemps();
-    _stopTimelineStream();
+    unawaited(clearTimelinePreviewCache());
     _seekDebounce?.cancel();
     _playingSub?.cancel();
     _positionSub?.cancel();

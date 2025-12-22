@@ -5,6 +5,7 @@ import 'package:video_editor/core/models/models.dart';
 import 'package:video_editor/core/services/project_service.dart';
 import 'package:video_editor/core/logic/timeline_provider.dart';
 import 'package:video_editor/core/logic/media_library_provider.dart';
+import 'package:video_editor/core/logic/preview_provider.dart';
 
 /// Provider for project service
 final projectServiceProvider = Provider<ProjectService>((ref) {
@@ -64,6 +65,9 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     int frameRate = 30,
     Duration? maxDuration,
   }) {
+    // Clear preview caches when switching projects.
+    unawaited(ref.read(previewProvider.notifier).clearTimelinePreviewCache());
+
     final project = Project(
       name: name,
       defaultExportSettings: ExportSettings(
@@ -134,6 +138,9 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     state = state.copyWith(clearError: true);
 
     try {
+      // Clear preview caches when switching projects.
+      await ref.read(previewProvider.notifier).clearTimelinePreviewCache();
+
       final service = ref.read(projectServiceProvider);
       final project = await service.loadProject(filePath);
 
@@ -210,6 +217,9 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
   /// Close current project
   void closeProject() {
     _stopAutoSave();
+
+    // Clear preview caches when closing project.
+    unawaited(ref.read(previewProvider.notifier).clearTimelinePreviewCache());
 
     // Clear timeline and media library
     ref.read(timelineProvider.notifier).clear();
