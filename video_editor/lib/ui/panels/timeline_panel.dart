@@ -70,7 +70,9 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     // Use preview position when playing, otherwise use timeline position
     final previewState = ref.watch(previewProvider);
     final currentPosition = previewState.isPlaying
-        ? previewState.currentPosition
+        ? (previewState.isTimelineStreaming
+            ? previewState.timelineStreamStartOffset + previewState.currentPosition
+            : previewState.currentPosition)
         : timeline.currentPosition;
 
     return Container(
@@ -986,18 +988,20 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
         ),
       ).then((success) {
         if (!mounted || !success) return;
-        previewNotifier.seekTo(timeline.currentPosition);
         previewNotifier.togglePlayPause();
       });
       return;
     }
 
     if (!previewState.isPlaying) {
-      previewNotifier.seekTo(timeline.currentPosition);
+      // No-op: timeline stream starts at current position.
     } else {
       // When pausing, sync timeline position with preview position
       final timelineNotifier = ref.read(timelineProvider.notifier);
-      timelineNotifier.setCurrentPosition(previewState.currentPosition);
+      final timelinePosition = previewState.isTimelineStreaming
+          ? previewState.timelineStreamStartOffset + previewState.currentPosition
+          : previewState.currentPosition;
+      timelineNotifier.setCurrentPosition(timelinePosition);
     }
 
     previewNotifier.togglePlayPause();

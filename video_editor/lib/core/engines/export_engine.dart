@@ -23,6 +23,229 @@ class ExportEngine {
     _currentProcess?.kill();
   }
 
+  /// Start a low-latency HLS preview stream for the timeline from [startPosition].
+  ///
+  /// The generated playlist file can be opened while FFmpeg is still writing.
+  Future<HlsPreviewSession> startTimelineHlsPreview(
+    Timeline timeline,
+    List<MediaItem> mediaLibrary,
+    ExportSettings settings, {
+    required Duration startPosition,
+    Duration? maxDuration,
+  }) async {
+    if (timeline.tracks.isEmpty) {
+      throw Exception('Timeline is empty');
+    }
+
+    if (timeline.videoTracks.isEmpty) {
+      throw Exception('No video tracks found');
+    }
+
+    await _assertFfmpegAvailable();
+
+    final timelineDuration = timeline.duration;
+    if (timelineDuration == Duration.zero) {
+      throw Exception('Timeline has zero duration');
+    }
+
+    var start = startPosition;
+    if (start < Duration.zero) start = Duration.zero;
+    if (start >= timelineDuration) {
+      start = timelineDuration - const Duration(milliseconds: 1);
+    }
+
+    final remaining = timelineDuration - start;
+    final requested = maxDuration != null && maxDuration > Duration.zero
+        ? (maxDuration < remaining ? maxDuration : remaining)
+        : remaining;
+
+    final width = settings.resolution.width;
+    final height = settings.resolution.height;
+    final fps = settings.frameRate;
+    final crf = _getQualityCRF(settings.quality);
+    final audio = settings.audioSettings;
+
+    final mediaMap = {for (final item in mediaLibrary) item.id: item};
+
+    // Build a ranged timeline (shifted so that [start] becomes 0:00).
+    final rangedTracks = <Track>[];
+    for (final track in timeline.tracks) {
+      final rangedClips = <Clip>[];
+      for (final clip in track.clips) {
+        final clipDuration = _clipDuration(clip);
+        if (clipDuration <= Duration.zero) continue;
+
+        final clipStart = clip.startTime;
+        final clipEnd = clipStart + clipDuration;
+        final rangeStart = start;
+        final rangeEnd = start + requested;
+
+        final segStart = clipStart > rangeStart ? clipStart : rangeStart;
+        final segEnd = clipEnd < rangeEnd ? clipEnd : rangeEnd;
+        final segDuration = segEnd - segStart;
+        if (segDuration <= Duration.zero) continue;
+
+        final mediaItem = mediaMap[clip.mediaItemId];
+        if (mediaItem == null) {
+          throw Exception('Missing media for clip: ${clip.mediaItemId}');
+        }
+
+        final sourceOffset = segStart - clipStart;
+        final rangedSourceStart = clip.sourceStart + sourceOffset;
+        final rangedStart = segStart - start;
+        final rangedEnd = rangedStart + segDuration;
+
+        rangedClips.add(
+          clip.copyWith(
+            startTime: rangedStart,
+            endTime: rangedEnd,
+            sourceStart: rangedSourceStart,
+            sourceDuration: segDuration,
+          ),
+        );
+      }
+      if (rangedClips.isNotEmpty) {
+        rangedTracks.add(track.copyWith(clips: rangedClips));
+      }
+    }
+
+    final rangedTimeline = timeline.copyWith(tracks: rangedTracks);
+    if (rangedTimeline.videoTracks.isEmpty) {
+      throw Exception('No clips to preview at the selected position');
+    }
+
+    // Collect inputs for ranged timeline (must preserve input index order).
+    final inputs = <_InputSpec>[];
+    var inputIndex = 0;
+    for (final track in rangedTimeline.tracks) {
+      for (final clip in track.clips) {
+        final item = mediaMap[clip.mediaItemId];
+        if (item == null) {
+          throw Exception('Missing media for clip: ${clip.mediaItemId}');
+        }
+        inputs.add(
+          _InputSpec(
+            inputIndex: inputIndex,
+            mediaItem: item,
+            clip: clip,
+            track: track,
+          ),
+        );
+        inputIndex += 1;
+      }
+    }
+
+    // Probe audio stream existence asynchronously to avoid blocking the UI isolate.
+    final audioAvailability = <String, bool>{};
+    final toProbe = inputs
+        .map((s) => s.mediaItem.filePath)
+        .where((p) => audioAvailability[p] == null)
+        .toSet()
+        .toList();
+    await Future.wait(
+      toProbe.map((p) async {
+        audioAvailability[p] = await _hasAudioStreamAsync(p);
+      }),
+    );
+
+    final inputArgs = <String>[];
+    for (final spec in inputs) {
+      if (spec.mediaItem.type == MediaType.image) {
+        inputArgs.addAll([
+          '-loop',
+          '1',
+          '-t',
+          _seconds(spec.clipDuration),
+        ]);
+      }
+      inputArgs.addAll(['-i', spec.mediaItem.filePath]);
+    }
+
+    final graph = _buildFilterGraph(
+      inputs: inputs,
+      timeline: rangedTimeline,
+      duration: requested,
+      width: width,
+      height: height,
+      fps: fps,
+      audioAvailability: audioAvailability,
+    );
+
+    final sessionDir = await Directory.systemTemp.createTemp('video_editor_hls_');
+    final playlistPath = path.join(sessionDir.path, 'stream.m3u8');
+    final segmentPattern = path.join(sessionDir.path, 'seg_%05d.m4s');
+
+    final args = <String>[
+      '-y',
+      ...inputArgs,
+      '-filter_complex',
+      graph,
+      '-map',
+      '[vout]',
+      '-map',
+      '[aout]',
+      '-r',
+      fps.toString(),
+      '-c:v',
+      'libx264',
+      '-crf',
+      crf.toString(),
+      '-preset',
+      settings.videoPreset,
+      '-tune',
+      'zerolatency',
+      '-pix_fmt',
+      'yuv420p',
+      '-g',
+      max(1, fps * 2).toString(),
+      '-keyint_min',
+      max(1, fps).toString(),
+      '-sc_threshold',
+      '0',
+      '-c:a',
+      audio.codec,
+      '-b:a',
+      _bitrateArg(audio.bitrate),
+      '-ar',
+      audio.sampleRate.toString(),
+      '-ac',
+      audio.channels.toString(),
+      '-muxdelay',
+      '0',
+      '-muxpreload',
+      '0',
+      '-f',
+      'hls',
+      '-hls_time',
+      '0.5',
+      '-hls_list_size',
+      '8',
+      '-hls_flags',
+      'delete_segments+append_list+independent_segments',
+      '-hls_segment_type',
+      'fmp4',
+      '-hls_fmp4_init_filename',
+      'init.mp4',
+      '-hls_segment_filename',
+      segmentPattern,
+      playlistPath,
+    ];
+
+    final process = await Process.start(
+      _ffmpeg,
+      args,
+      mode: ProcessStartMode.detachedWithStdio,
+    );
+
+    return HlsPreviewSession._(
+      directory: sessionDir,
+      playlistPath: playlistPath,
+      startOffset: start,
+      duration: requested,
+      process: process,
+    );
+  }
+
   /// Export timeline to video file.
   Future<void> exportTimeline(
     Timeline timeline,
@@ -970,5 +1193,38 @@ class ExportProgress {
     final minutes = totalSeconds ~/ 60;
     final seconds = totalSeconds % 60;
     return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  }
+}
+
+class HlsPreviewSession {
+  final Directory directory;
+  final String playlistPath;
+  final Duration startOffset;
+  final Duration duration;
+  final Process _process;
+
+  HlsPreviewSession._({
+    required this.directory,
+    required this.playlistPath,
+    required this.startOffset,
+    required this.duration,
+    required Process process,
+  }) : _process = process;
+
+  Future<int> get exitCode => _process.exitCode;
+
+  Future<void> stop() async {
+    _process.kill(ProcessSignal.sigterm);
+    try {
+      await _process.exitCode.timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    try {
+      _process.kill(ProcessSignal.sigkill);
+    } catch (_) {}
+    try {
+      if (await directory.exists()) {
+        await directory.delete(recursive: true);
+      }
+    } catch (_) {}
   }
 }

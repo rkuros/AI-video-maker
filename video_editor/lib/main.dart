@@ -3,9 +3,12 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:media_kit/media_kit.dart';
 import 'ui/screens/main_window.dart';
 
 void main() {
+  MediaKit.ensureInitialized();
+
   FlutterError.onError = (details) {
     FlutterError.dumpErrorToConsole(details);
     _appendFatalLog('FlutterError', details.exception, details.stack ?? StackTrace.current);
