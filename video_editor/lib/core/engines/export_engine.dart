@@ -1062,6 +1062,7 @@ class ExportEngine {
     Function(ExportProgress progress) onProgress,
   ) async {
     _cancelRequested = false;
+    print('Starting export: totalDuration = ${totalDuration.inSeconds}s (${totalDuration.inMilliseconds}ms)');
     final process = await Process.start(_ffmpeg, args);
     _currentProcess = process;
     final totalMs = max(1, totalDuration.inMilliseconds);
@@ -1083,13 +1084,22 @@ class ExportEngine {
         .transform(utf8.decoder)
         .forEach((line) {
           for (final chunk in line.split('\n')) {
+            if (chunk.isEmpty) continue;
+
+            // Debug: Print raw progress line
+            if (chunk.contains('=')) {
+              print('FFmpeg progress: $chunk');
+            }
+
             if (chunk.startsWith('out_time_us=')) {
               // FFmpeg outputs time in microseconds, convert to milliseconds
               final timeUs = int.tryParse(chunk.split('=').last.trim()) ?? 0;
               currentTimeMs = timeUs ~/ 1000;
+              print('Parsed time (ms): $currentTimeMs / $totalMs');
             } else if (chunk.startsWith('out_time_ms=')) {
               // Some FFmpeg versions output milliseconds directly
               currentTimeMs = int.tryParse(chunk.split('=').last.trim()) ?? 0;
+              print('Parsed time (ms): $currentTimeMs / $totalMs');
             } else if (chunk.startsWith('frame=')) {
               currentFrame = int.tryParse(chunk.split('=').last.trim());
             } else if (chunk.startsWith('fps=')) {
@@ -1117,6 +1127,8 @@ class ExportEngine {
                   // Clamp to reasonable range (0 to 24 hours)
                   estimatedRemaining = Duration(milliseconds: remainingMs.clamp(0, 86400000));
                 }
+
+                print('Progress: ${currentPercentage}%, Remaining: ${estimatedRemaining?.inSeconds ?? 0}s');
 
                 onProgress(ExportProgress(
                   progress: progressValue,

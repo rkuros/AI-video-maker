@@ -15,7 +15,10 @@ class HighlightGeneratorService {
   final Map<String, List<Duration>> _sceneDetectionCache = {};
 
   // Maximum parallel jobs
-  static const int _maxParallelJobs = 4;
+  static final int _maxParallelJobs = max(
+    2,
+    min(Platform.numberOfProcessors, 8),
+  );
 
   HighlightGeneratorService(
     this._beatAnalyzer,
@@ -31,6 +34,14 @@ class HighlightGeneratorService {
   static const HighlightPreferences _defaultPreferences =
       HighlightPreferences();
 
+  void _emitProgress(
+    HighlightProgressCallback? onProgress,
+    HighlightGenerationProgress progress,
+  ) {
+    if (onProgress == null) return;
+    onProgress(progress);
+  }
+
   Future<Timeline> generateHighlight({
     required Timeline baseTimeline,
     required Duration targetDuration,
@@ -38,14 +49,23 @@ class HighlightGeneratorService {
     HighlightPattern? pattern,
     HighlightPreferences? preferences,
     MediaItem? bgmTrack,
+    HighlightProgressCallback? onProgress,
   }) async {
+    _emitProgress(
+      onProgress,
+      const HighlightGenerationProgress(HighlightGenerationStage.preparing),
+    );
     final effectivePattern = pattern ?? _defaultPattern;
     final effectivePreferences = preferences ?? _defaultPreferences;
 
     switch (mode) {
       case HighlightGenerationMode.beat:
         if (bgmTrack == null || bgmTrack.filePath.isEmpty) {
-          return generateTimeBasedHighlight(baseTimeline, targetDuration);
+          return generateTimeBasedHighlight(
+            baseTimeline,
+            targetDuration,
+            onProgress: onProgress,
+          );
         }
         return generateBeatBasedHighlight(
           baseTimeline,
@@ -53,6 +73,7 @@ class HighlightGeneratorService {
           targetDuration,
           pattern: effectivePattern,
           preferences: effectivePreferences,
+          onProgress: onProgress,
         );
       case HighlightGenerationMode.time:
         return generateTimeBasedHighlight(
@@ -60,6 +81,7 @@ class HighlightGeneratorService {
           targetDuration,
           pattern: effectivePattern,
           preferences: effectivePreferences,
+          onProgress: onProgress,
         );
       case HighlightGenerationMode.pattern:
         return generatePatternHighlight(
@@ -67,6 +89,7 @@ class HighlightGeneratorService {
           effectivePattern,
           targetDuration,
           effectivePreferences,
+          onProgress: onProgress,
         );
     }
   }
@@ -78,7 +101,14 @@ class HighlightGeneratorService {
     Duration targetDuration, {
     HighlightPattern pattern = _defaultPattern,
     HighlightPreferences preferences = _defaultPreferences,
+    HighlightProgressCallback? onProgress,
   }) async {
+    _emitProgress(
+      onProgress,
+      const HighlightGenerationProgress(
+        HighlightGenerationStage.detectingBeats,
+      ),
+    );
     // Analyze BGM beats
     final beatAnalysis = await _beatAnalyzer.analyzeBeat(bgmTrack.filePath);
 
@@ -98,6 +128,7 @@ class HighlightGeneratorService {
         targetDuration,
         pattern: pattern,
         preferences: preferences,
+        onProgress: onProgress,
       );
     }
 
@@ -105,6 +136,7 @@ class HighlightGeneratorService {
       candidates,
       pattern,
       preferences,
+      onProgress: onProgress,
     );
     final minGapSeconds = max(pattern.minGapSeconds, preferences.minGapSeconds);
     final diversityWeight = max(
@@ -128,6 +160,7 @@ class HighlightGeneratorService {
           targetDuration,
           pattern: pattern,
           preferences: preferences,
+          onProgress: onProgress,
         );
       }
     }
@@ -139,6 +172,12 @@ class HighlightGeneratorService {
       diversityWeight: diversityWeight,
       oneSegmentPerClip: preferences.oneSegmentPerClip,
     );
+    _emitProgress(
+      onProgress,
+      const HighlightGenerationProgress(
+        HighlightGenerationStage.buildingTimeline,
+      ),
+    );
     return _buildHighlightFromSegments(selected, bgmTrack: bgmTrack);
   }
 
@@ -148,15 +187,26 @@ class HighlightGeneratorService {
     Duration targetDuration, {
     HighlightPattern pattern = _defaultPattern,
     HighlightPreferences preferences = _defaultPreferences,
+    HighlightProgressCallback? onProgress,
   }) async {
     final requiredClipIds = preferences.requireAllClips
         ? _collectRequiredClipIds(baseTimeline)
         : null;
-    final segments = await _extractAdaptiveSegments(baseTimeline);
+    _emitProgress(
+      onProgress,
+      const HighlightGenerationProgress(
+        HighlightGenerationStage.detectingScenes,
+      ),
+    );
+    final segments = await _extractAdaptiveSegments(
+      baseTimeline,
+      onProgress: onProgress,
+    );
     final scoredSegments = await _scoreSegmentsWithPattern(
       segments,
       pattern,
       preferences,
+      onProgress: onProgress,
     );
 
     final diverseSegments = _applyDiversityConstraints(
@@ -176,6 +226,12 @@ class HighlightGeneratorService {
             requiredClipIds: requiredClipIds,
             oneSegmentPerClip: preferences.oneSegmentPerClip,
           );
+    _emitProgress(
+      onProgress,
+      const HighlightGenerationProgress(
+        HighlightGenerationStage.buildingTimeline,
+      ),
+    );
     selected.sort((a, b) => a.segment.start.compareTo(b.segment.start));
     return _buildHighlightFromSegments(selected);
   }
@@ -185,19 +241,30 @@ class HighlightGeneratorService {
     Timeline baseTimeline,
     HighlightPattern pattern,
     Duration targetDuration,
-    HighlightPreferences preferences,
-  ) async {
+    HighlightPreferences preferences, {
+    HighlightProgressCallback? onProgress,
+  }) async {
     final requiredClipIds = preferences.requireAllClips
         ? _collectRequiredClipIds(baseTimeline)
         : null;
     // Extract segments
-    final segments = await _extractAdaptiveSegments(baseTimeline);
+    _emitProgress(
+      onProgress,
+      const HighlightGenerationProgress(
+        HighlightGenerationStage.detectingScenes,
+      ),
+    );
+    final segments = await _extractAdaptiveSegments(
+      baseTimeline,
+      onProgress: onProgress,
+    );
 
     // Score with pattern weights using real feature extraction
     final scoredSegments = await _scoreSegmentsWithPattern(
       segments,
       pattern,
       preferences,
+      onProgress: onProgress,
     );
 
     // Apply diversity constraints
@@ -226,6 +293,12 @@ class HighlightGeneratorService {
         ? _adjustPace(selectedSegments, pattern.paceFactor)
         : selectedSegments;
 
+    _emitProgress(
+      onProgress,
+      const HighlightGenerationProgress(
+        HighlightGenerationStage.buildingTimeline,
+      ),
+    );
     adjustedSegments.sort((a, b) => a.segment.start.compareTo(b.segment.start));
     return _buildHighlightFromSegments(adjustedSegments);
   }
@@ -346,8 +419,9 @@ class HighlightGeneratorService {
   }
 
   Future<List<_SegmentContext>> _extractAdaptiveSegments(
-    Timeline timeline,
-  ) async {
+    Timeline timeline, {
+    HighlightProgressCallback? onProgress,
+  }) async {
     final segments = <_SegmentContext>[];
 
     // Collect all clips first
@@ -361,6 +435,7 @@ class HighlightGeneratorService {
     // Parallel scene detection with batching
     final sceneDetectionResults = await _detectSceneCutsParallel(
       allClips.map((e) => e.clip).toList(),
+      onProgress: onProgress,
     );
 
     // Build segments from detection results
@@ -409,15 +484,30 @@ class HighlightGeneratorService {
 
   /// Detect scene cuts for multiple clips in parallel
   Future<List<List<Duration>>> _detectSceneCutsParallel(
-    List<Clip> clips,
-  ) async {
+    List<Clip> clips, {
+    HighlightProgressCallback? onProgress,
+  }) async {
     final results = <List<Duration>>[];
+    final total = clips.length;
+    var completed = 0;
 
     // Process clips in batches to limit parallelism
     for (var i = 0; i < clips.length; i += _maxParallelJobs) {
       final batch = clips.skip(i).take(_maxParallelJobs).toList();
       final batchResults = await Future.wait(
-        batch.map((clip) => _detectSceneCutsForClip(clip)),
+        batch.map((clip) async {
+          final out = await _detectSceneCutsForClip(clip);
+          completed++;
+          _emitProgress(
+            onProgress,
+            HighlightGenerationProgress(
+              HighlightGenerationStage.detectingScenes,
+              completed: completed,
+              total: total,
+            ),
+          );
+          return out;
+        }),
       );
       results.addAll(batchResults);
     }
@@ -545,10 +635,20 @@ class HighlightGeneratorService {
   Future<List<_ScoredSegment>> _scoreSegmentsWithPattern(
     List<_SegmentContext> segments,
     HighlightPattern pattern,
-    HighlightPreferences preferences,
-  ) async {
+    HighlightPreferences preferences, {
+    HighlightProgressCallback? onProgress,
+  }) async {
     final scored = <_ScoredSegment>[];
     final preferenceMultiplier = _calculatePreferenceMultiplier(preferences);
+    final total = segments.length;
+    _emitProgress(
+      onProgress,
+      HighlightGenerationProgress(
+        HighlightGenerationStage.scoringSegments,
+        completed: 0,
+        total: total,
+      ),
+    );
 
     // Process segments in parallel batches
     for (var i = 0; i < segments.length; i += _maxParallelJobs) {
@@ -561,6 +661,14 @@ class HighlightGeneratorService {
       );
 
       scored.addAll(batchResults);
+      _emitProgress(
+        onProgress,
+        HighlightGenerationProgress(
+          HighlightGenerationStage.scoringSegments,
+          completed: min(i + batch.length, total),
+          total: total,
+        ),
+      );
     }
 
     return scored;
@@ -891,29 +999,53 @@ class HighlightGeneratorService {
     final videoTrack = Track(type: TrackType.video, name: 'Highlight Video');
     timeline = timeline.addTrack(videoTrack);
 
+    // Create audio track for original video audio
+    final audioTrack = Track(type: TrackType.audio, name: 'Original Audio');
+    timeline = timeline.addTrack(audioTrack);
+
     var currentTime = Duration.zero;
     for (final context in segments) {
       final sourceOffset = context.segment.start - context.clip.startTime;
       final sourceStart = context.clip.sourceStart + sourceOffset;
       final duration = context.segment.duration;
 
-      final clip = Clip(
+      // Add video clip
+      final videoClip = Clip(
         mediaItemId: context.clip.mediaItemId,
         startTime: currentTime,
         endTime: currentTime + duration,
         sourceStart: sourceStart,
         sourceDuration: duration,
       );
+      timeline = timeline.addClipToTrack(videoTrack.id, videoClip);
 
-      timeline = timeline.addClipToTrack(videoTrack.id, clip);
+      // Add audio clip from the same source
+      final mediaItem = _mediaLibrary.cast<MediaItem?>().firstWhere(
+        (item) => item?.id == context.clip.mediaItemId,
+        orElse: () => null,
+      );
+
+      // Only add audio clip if the media item has audio (video or audio type)
+      if (mediaItem != null &&
+          (mediaItem.type == MediaType.video || mediaItem.type == MediaType.audio)) {
+        final audioClip = Clip(
+          mediaItemId: context.clip.mediaItemId,
+          startTime: currentTime,
+          endTime: currentTime + duration,
+          sourceStart: sourceStart,
+          sourceDuration: duration,
+        );
+        timeline = timeline.addClipToTrack(audioTrack.id, audioClip);
+      }
+
       currentTime += duration;
     }
 
     if (bgmTrack != null &&
         bgmTrack.filePath.isNotEmpty &&
         currentTime > Duration.zero) {
-      final audioTrack = Track(type: TrackType.audio, name: 'BGM');
-      timeline = timeline.addTrack(audioTrack);
+      final bgmAudioTrack = Track(type: TrackType.audio, name: 'BGM');
+      timeline = timeline.addTrack(bgmAudioTrack);
       final bgmClip = Clip(
         mediaItemId: bgmTrack.id,
         startTime: Duration.zero,
@@ -921,7 +1053,7 @@ class HighlightGeneratorService {
         sourceStart: Duration.zero,
         sourceDuration: currentTime,
       );
-      timeline = timeline.addClipToTrack(audioTrack.id, bgmClip);
+      timeline = timeline.addClipToTrack(bgmAudioTrack.id, bgmClip);
     }
 
     return timeline;
@@ -971,3 +1103,53 @@ extension HighlightGeneratorServiceDispose on HighlightGeneratorService {
 }
 
 enum HighlightGenerationMode { beat, time, pattern }
+
+typedef HighlightProgressCallback =
+    void Function(HighlightGenerationProgress progress);
+
+enum HighlightGenerationStage {
+  preparing,
+  detectingBeats,
+  detectingScenes,
+  scoringSegments,
+  buildingTimeline,
+  done,
+}
+
+class HighlightGenerationProgress {
+  final HighlightGenerationStage stage;
+  final int? completed;
+  final int? total;
+  final String? message;
+
+  const HighlightGenerationProgress(
+    this.stage, {
+    this.completed,
+    this.total,
+    this.message,
+  });
+
+  double? get fraction {
+    final c = completed;
+    final t = total;
+    if (c == null || t == null || t <= 0) return null;
+    return (c / t).clamp(0.0, 1.0);
+  }
+
+  String get stageLabel {
+    switch (stage) {
+      case HighlightGenerationStage.preparing:
+        return '準備中';
+      case HighlightGenerationStage.detectingBeats:
+        return 'BGM解析中';
+      case HighlightGenerationStage.detectingScenes:
+        return 'シーン解析中';
+      case HighlightGenerationStage.scoringSegments:
+        return 'スコア計算中';
+      case HighlightGenerationStage.buildingTimeline:
+        return 'タイムライン作成中';
+      case HighlightGenerationStage.done:
+        return '完了';
+    }
+  }
+}

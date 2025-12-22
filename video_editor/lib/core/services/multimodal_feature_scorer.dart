@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:video_editor/core/models/highlight.dart';
+import 'package:video_editor/core/services/highlight_feature_cache.dart';
 import 'visual_feature_extractor.dart';
 import 'audio_feature_extractor.dart';
 import 'text_feature_extractor.dart';
@@ -29,6 +30,29 @@ class MultimodalFeatureScorer {
   ) async {
     final segmentDuration = endTime - startTime;
 
+    String? key;
+    try {
+      final stat = await File(videoPath).stat();
+      key = HighlightFeatureCache.instance.buildKey(
+        videoPath: videoPath,
+        fileMtime: stat.modified,
+        fileSize: stat.size,
+        startTime: startTime,
+        endTime: endTime,
+        params: const <String, Object?>{
+          'framesMotion': 10,
+          'framesFace': 5,
+          'framesAesthetic': 5,
+          'framesOcr': 15,
+          'audioSamplePoints': 10,
+        },
+      );
+      final cached = await HighlightFeatureCache.instance.getFeatures(key);
+      if (cached != null) return cached;
+    } catch (_) {
+      key = null;
+    }
+
     // Extract frames once per segment and reuse to avoid re-running FFmpeg.
     final frames15 = await _visualExtractor.extractFrames(
       videoPath,
@@ -40,12 +64,31 @@ class MultimodalFeatureScorer {
     final frames5 = _selectEvenlySpacedFrames(frames15, 5);
 
     try {
-      final motionSegments = await _visualExtractor.analyzeMotion(
+      final sceneChangesFuture = _visualExtractor.detectSceneChanges(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+      );
+      final audioFuture = _audioExtractor.analyzeVolumeAndEnergy(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+        samplePoints: 10,
+      );
+
+      final motionFuture = _visualExtractor.analyzeMotion(
         videoPath,
         segmentDuration,
         startTime: startTime,
         samplePoints: 10,
         frames: frames10,
+      );
+      final aestheticFuture = _visualExtractor.analyzeAesthetics(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+        samplePoints: 5,
+        frames: frames5,
       );
       final faceSegments = await _visualExtractor.detectFaces(
         videoPath,
@@ -54,32 +97,7 @@ class MultimodalFeatureScorer {
         samplePoints: 5,
         frames: frames5,
       );
-      final aestheticSegments = await _visualExtractor.analyzeAesthetics(
-        videoPath,
-        segmentDuration,
-        startTime: startTime,
-        samplePoints: 5,
-        frames: frames5,
-      );
-      final sceneChanges = await _visualExtractor.detectSceneChanges(
-        videoPath,
-        segmentDuration,
-        startTime: startTime,
-      );
 
-      // Extract audio features
-      final volumeSegments = await _audioExtractor.analyzeVolume(
-        videoPath,
-        segmentDuration,
-        startTime: startTime,
-        samplePoints: 10,
-      );
-      final energySegments = await _audioExtractor.analyzeEnergy(
-        videoPath,
-        segmentDuration,
-        startTime: startTime,
-        samplePoints: 10,
-      );
       final speechSegments = await _audioExtractor.detectSpeech(
         videoPath,
         segmentDuration,
@@ -103,19 +121,28 @@ class MultimodalFeatureScorer {
       final keywordSegments = await _textExtractor
           .analyzeKeywordsFromTextSegments(textSegments);
 
-      return SegmentFeatures(
+      final motionSegments = await motionFuture;
+      final aestheticSegments = await aestheticFuture;
+      final sceneChanges = await sceneChangesFuture;
+      final audio = await audioFuture;
+
+      final features = SegmentFeatures(
         motionIntensity: _averageMotion(motionSegments),
         sceneChanges: sceneChanges.length,
         faceCount: _averageFaceCount(faceSegments),
         hasSmiles: faceSegments.any((f) => f.hasSmile),
         aestheticScore: _averageAesthetic(aestheticSegments),
-        volumeLevel: _averageVolume(volumeSegments),
-        energyLevel: _averageEnergy(energySegments),
+        volumeLevel: _averageVolume(audio.volumeSegments),
+        energyLevel: _averageEnergy(audio.energySegments),
         hasSpeech: speechSegments.isNotEmpty,
         beatCount: beats.length,
         hasText: textSegments.isNotEmpty,
         keywordScore: _averageKeywordScore(keywordSegments),
       );
+      if (key != null) {
+        await HighlightFeatureCache.instance.putFeatures(key, features);
+      }
+      return features;
     } finally {
       for (final framePath in frames15) {
         try {

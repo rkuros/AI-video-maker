@@ -46,24 +46,13 @@ class AudioFeatureExtractor {
     Duration startTime = Duration.zero,
     int samplePoints = 30,
   }) async {
-    final audioPath = await extractAudio(
+    final result = await analyzeVolumeAndEnergy(
       videoPath,
+      videoDuration,
       startTime: startTime,
-      duration: videoDuration,
+      samplePoints: samplePoints,
     );
-    if (audioPath == null) return const [];
-
-    try {
-      return await _analyzeVolumeFromWav(
-        audioPath,
-        videoDuration,
-        samplePoints: samplePoints,
-      );
-    } finally {
-      try {
-        await File(audioPath).delete();
-      } catch (_) {}
-    }
+    return result.volumeSegments;
   }
 
   /// Detect beats in audio
@@ -259,61 +248,79 @@ class AudioFeatureExtractor {
     Duration startTime = Duration.zero,
     int samplePoints = 30,
   }) async {
-    final energySegments = <EnergySegment>[];
+    final result = await analyzeVolumeAndEnergy(
+      videoPath,
+      videoDuration,
+      startTime: startTime,
+      samplePoints: samplePoints,
+    );
+    return result.energySegments;
+  }
 
-    // Energy is a combination of volume and frequency activity.
-    // Extract audio once and reuse for both.
+  Future<
+    ({List<VolumeSegment> volumeSegments, List<EnergySegment> energySegments})
+  >
+  analyzeVolumeAndEnergy(
+    String videoPath,
+    Duration videoDuration, {
+    Duration startTime = Duration.zero,
+    int samplePoints = 30,
+  }) async {
+    // Extract audio once and reuse.
     final audioPath = await extractAudio(
       videoPath,
       startTime: startTime,
       duration: videoDuration,
     );
-    if (audioPath == null) return energySegments;
+    if (audioPath == null) {
+      return (
+        volumeSegments: <VolumeSegment>[],
+        energySegments: <EnergySegment>[],
+      );
+    }
 
-    List<VolumeSegment> volumeSegments;
-    List<FrequencySegment> frequencySegments;
     try {
-      volumeSegments = await _analyzeVolumeFromWav(
+      final volumeSegments = await _analyzeVolumeFromWav(
         audioPath,
         videoDuration,
         samplePoints: samplePoints,
       );
-      frequencySegments = await _analyzeFrequencyFromWav(
+      final frequencySegments = await _analyzeFrequencyFromWav(
         audioPath,
         videoDuration,
         samplePoints: samplePoints,
       );
+
+      final energySegments = <EnergySegment>[];
+      for (
+        int i = 0;
+        i < min(volumeSegments.length, frequencySegments.length);
+        i++
+      ) {
+        final volume = volumeSegments[i];
+        final frequency = frequencySegments[i];
+
+        final volumeEnergy = (volume.meanVolume + volume.maxVolume) / 2;
+        final frequencyEnergy =
+            (frequency.midFrequency + frequency.highFrequency) / 2;
+        final energy = (volumeEnergy * 0.6 + frequencyEnergy * 0.4);
+
+        energySegments.add(
+          EnergySegment(
+            startTime: volume.startTime,
+            endTime: volume.endTime,
+            energy: energy,
+            excitement: energy,
+          ),
+        );
+      }
+
+      return (volumeSegments: volumeSegments, energySegments: energySegments);
     } finally {
       try {
         await File(audioPath).delete();
       } catch (_) {}
     }
-
-    for (
-      int i = 0;
-      i < min(volumeSegments.length, frequencySegments.length);
-      i++
-    ) {
-      final volume = volumeSegments[i];
-      final frequency = frequencySegments[i];
-
-      // Calculate energy score
-      final volumeEnergy = (volume.meanVolume + volume.maxVolume) / 2;
-      final frequencyEnergy =
-          (frequency.midFrequency + frequency.highFrequency) / 2;
-      final energy = (volumeEnergy * 0.6 + frequencyEnergy * 0.4);
-
-      energySegments.add(
-        EnergySegment(
-          startTime: volume.startTime,
-          endTime: volume.endTime,
-          energy: energy,
-          excitement: energy, // Simplified: energy = excitement
-        ),
-      );
-    }
-
-    return energySegments;
   }
 
   Future<List<VolumeSegment>> _analyzeVolumeFromWav(
