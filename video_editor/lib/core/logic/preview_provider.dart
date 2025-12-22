@@ -564,10 +564,36 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
   Future<void> setTimelinePreviewPreset(enums.PreviewQualityPreset preset) async {
     if (preset == state.timelinePreviewPreset) return;
 
-    await _stopTimelineStream();
+    final wasPlaying = state.isPlaying;
+    final wasStreaming = state.isTimelineStreaming;
+    final currentTimelinePosition = wasStreaming
+        ? state.timelineStreamStartOffset + state.currentPosition
+        : null;
+
     state = state.copyWith(
       timelinePreviewPreset: preset,
       timelinePreviewPath: null,
+    );
+
+    // If a timeline stream is active, restart it immediately at the current
+    // timeline position so the new resolution/quality takes effect right away.
+    if (wasStreaming && _lastStreamTimeline != null && _lastStreamMediaLibrary != null) {
+      await loadTimelinePreview(
+        _lastStreamTimeline!,
+        _lastStreamMediaLibrary!,
+        preset: preset,
+        startPosition: currentTimelinePosition,
+      );
+      if (wasPlaying) {
+        await play();
+      }
+      return;
+    }
+
+    // Otherwise, just stop any pending stream state; the next Play will start
+    // with the new preset.
+    await _stopTimelineStream();
+    state = state.copyWith(
       isTimelineStreaming: false,
       timelineStreamStartOffset: Duration.zero,
     );

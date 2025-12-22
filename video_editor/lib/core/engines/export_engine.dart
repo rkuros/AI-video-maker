@@ -849,9 +849,8 @@ class ExportEngine {
   }
 
   Duration _clipDuration(Clip clip) {
-    if (clip.sourceDuration > Duration.zero) {
-      return clip.sourceDuration;
-    }
+    // Always use the actual clip duration (respects trimming)
+    // clip.duration is calculated as endTime - startTime
     return clip.duration;
   }
 
@@ -1188,9 +1187,8 @@ class _InputSpec {
   });
 
   Duration get clipDuration {
-    if (clip.sourceDuration > Duration.zero) {
-      return clip.sourceDuration;
-    }
+    // Always use the actual clip duration (respects trimming)
+    // clip.duration is calculated as endTime - startTime
     return clip.duration;
   }
 }

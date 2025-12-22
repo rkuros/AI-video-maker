@@ -250,7 +250,8 @@ class Timeline {
     var currentEnd = inserted.endTime;
     final shiftedAfter = <Clip>[];
     for (final c in after) {
-      final d = _clipDurationForInsert(c);
+      // Use the actual clip duration (respects trimming)
+      final d = c.duration;
       if (c.startTime < currentEnd) {
         final shifted = c.copyWith(
           startTime: currentEnd,

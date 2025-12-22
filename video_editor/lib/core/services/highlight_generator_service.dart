@@ -175,7 +175,8 @@ class HighlightGeneratorService {
       for (final clip in track.clips) {
         final sceneCuts = await _detectSceneCutsForClip(clip);
         final boundaries = _buildSegmentBoundaries(
-          clip.sourceDuration > Duration.zero ? clip.sourceDuration : clip.duration,
+          // Use actual clip duration (respects trimming)
+          clip.duration,
           sceneCuts,
         );
         for (var i = 0; i < boundaries.length - 1; i++) {
