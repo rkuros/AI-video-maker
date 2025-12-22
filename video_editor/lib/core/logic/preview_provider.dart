@@ -246,7 +246,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     }
   }
 
-  Future<void> _waitForHlsReady(
+  Future<bool> _waitForHlsReady(
     String playlistPath, {
     required Duration timeout,
     void Function(Duration elapsed)? onTick,
@@ -256,7 +256,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       final elapsed = DateTime.now().difference(startedAt);
       onTick?.call(elapsed);
       if (elapsed >= timeout) {
-        throw Exception('HLS playlist not ready within ${timeout.inSeconds}s');
+        return false;
       }
 
       try {
@@ -265,7 +265,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
           final text = await f.readAsString();
           // A ready playlist typically contains at least one media segment entry.
           if (text.contains('#EXTINF') || text.contains('.m4s')) {
-            return;
+            return true;
           }
         }
       } catch (_) {}
@@ -733,11 +733,14 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       _hlsSession = session;
 
       // Wait for playlist to appear and include at least one segment.
-      await _waitForHlsReady(
+      //
+      // We aim to start within ~5s, but some effects (e.g. heavy denoise) can
+      // delay the first segment. Don't throw at 5s; keep waiting up to 15s.
+      final readyFast = await _waitForHlsReady(
         session.playlistPath,
         timeout: const Duration(seconds: 5),
         onTick: (elapsed) {
-          final p = (elapsed.inMilliseconds / 5000.0).clamp(0.0, 1.0);
+          final p = (elapsed.inMilliseconds / 5000.0).clamp(0.0, 0.9);
           onProgress?.call(
             ExportProgress(
               progress: p,
@@ -746,6 +749,26 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
           );
         },
       );
+      if (!readyFast) {
+        final readySlow = await _waitForHlsReady(
+          session.playlistPath,
+          timeout: const Duration(seconds: 10),
+          onTick: (elapsed) {
+            // Continue to show progress without hitting 100% until ready.
+            final p = (0.9 + (elapsed.inMilliseconds / 10000.0) * 0.09)
+                .clamp(0.9, 0.99);
+            onProgress?.call(
+              ExportProgress(
+                progress: p,
+                elapsed: DateTime.now().difference(startedAt),
+              ),
+            );
+          },
+        );
+        if (!readySlow) {
+          throw Exception('HLS playlist not ready within 15s');
+        }
+      }
 
       final player = _player!;
       await player.open(Media(session.playlistPath), play: false);

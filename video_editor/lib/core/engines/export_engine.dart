@@ -173,6 +173,7 @@ class ExportEngine {
       height: height,
       fps: fps,
       audioAvailability: audioAvailability,
+      fastPreview: true,
     );
 
     final sessionDir = await Directory.systemTemp.createTemp('video_editor_hls_');
@@ -504,6 +505,7 @@ class ExportEngine {
     required int height,
     required int fps,
     required Map<String, bool> audioAvailability,
+    bool fastPreview = false,
   }) {
     final filters = <String>[];
     final timelineSeconds = duration.inMilliseconds / 1000.0;
@@ -541,6 +543,7 @@ class ExportEngine {
         height: height,
         trackIndex: trackIndex,
         fps: fps,
+        fastPreview: fastPreview,
       );
 
       final nextVideoLabel = 'vbase_track$trackIndex';
@@ -610,6 +613,7 @@ class ExportEngine {
 	    required int height,
 	    required int trackIndex,
 	    required int fps,
+      required bool fastPreview,
 	  }) {
 	    String? currentLabel;
 	    var currentDuration = Duration.zero;
@@ -649,7 +653,7 @@ class ExportEngine {
 	        'pad=$width:$height:(ow-iw)/2:(oh-ih)/2',
 	        'setsar=1',
 	      ];
-	      clipFilters.addAll(_buildEffectFilters(clip.effects));
+	      clipFilters.addAll(_buildEffectFilters(clip.effects, fastPreview: fastPreview));
 	      clipFilters.addAll(_buildFadeFiltersForClip(clip, clipDuration));
 	      clipFilters.add('format=rgba');
 
@@ -777,10 +781,13 @@ class ExportEngine {
     }
   }
 
-  List<String> _buildEffectFilters(List<Effect> effects) {
+  List<String> _buildEffectFilters(
+    List<Effect> effects, {
+    required bool fastPreview,
+  }) {
     final filters = <String>[];
     for (final effect in effects) {
-      final filter = _effectFilter(effect);
+      final filter = _effectFilter(effect, fastPreview: fastPreview);
       if (filter.isNotEmpty) {
         filters.add(filter);
       }
@@ -1034,7 +1041,7 @@ class ExportEngine {
   String _seconds(Duration duration) =>
       (duration.inMilliseconds / 1000.0).toStringAsFixed(3);
 
-  String _effectFilter(Effect effect) {
+  String _effectFilter(Effect effect, {required bool fastPreview}) {
     switch (effect.type) {
       case 'color_adjustment':
         final brightness =
@@ -1072,13 +1079,13 @@ class ExportEngine {
         final temporal = settings.temporalRadius.clamp(1, 5);
         return 'hqdn3d=$luma:$chroma:$temporal:$temporal';
       case 'auto_denoise':
-        return _buildDenoiseFilterChain(effect);
+        return _buildDenoiseFilterChain(effect, fastPreview: fastPreview);
       default:
         return '';
     }
   }
 
-  String _buildDenoiseFilterChain(Effect effect) {
+  String _buildDenoiseFilterChain(Effect effect, {required bool fastPreview}) {
     final settings = DenoiseSettings.fromJson(effect.parameters);
     final filters = <String>[];
 
@@ -1087,6 +1094,11 @@ class ExportEngine {
     final chroma = (settings.chromaStrength * 5).clamp(0.1, 5.0);
     final temporal = settings.temporalRadius.clamp(1, 5);
     filters.add('hqdn3d=$luma:$chroma:$temporal:$temporal');
+
+    // Streaming preview must start quickly; skip heavy filters.
+    if (fastPreview) {
+      return filters.join(',');
+    }
 
     // nlmeans (non-local means) - high quality, preserves details
     if (settings.useNlmeans) {
