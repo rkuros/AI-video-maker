@@ -1,0 +1,16 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Codex / local tooling
+.claude/
+.kiro/
+
+# Flutter (project lives under video_editor/)
+video_editor/.dart_tool/
+video_editor/build/
+video_editor/.flutter-plugins
+video_editor/.flutter-plugins-dependencies
+video_editor/.pub-cache/
+video_editor/.pub/
+video_editor/coverage/
