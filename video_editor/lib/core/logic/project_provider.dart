@@ -81,10 +81,7 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     ref.read(timelineProvider.notifier).clear();
     ref.read(mediaLibraryProvider.notifier).clear();
 
-    state = ProjectState(
-      project: project,
-      isModified: false,
-    );
+    state = ProjectState(project: project, isModified: false);
   }
 
   /// Save the current project
@@ -101,10 +98,9 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
       final mediaLibrary = ref.read(mediaLibraryProvider);
 
       // Update project with current state
-      final updatedProject = state.project!.copyWith(
-        timeline: timeline,
-        mediaLibrary: mediaLibrary,
-      ).touch();
+      final updatedProject = state.project!
+          .copyWith(timeline: timeline, mediaLibrary: mediaLibrary)
+          .touch();
 
       // Determine file path
       String filePath;
@@ -172,9 +168,7 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
         error: warning,
       );
     } catch (e) {
-      state = state.copyWith(
-        error: 'Failed to load project: $e',
-      );
+      state = state.copyWith(error: 'Failed to load project: $e');
     }
   }
 
@@ -190,6 +184,8 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     String? name,
     Resolution? resolution,
     int? frameRate,
+    bool? audioNormalizeEnabled,
+    String? audioNormalizeFilter,
     Duration? maxDuration,
     bool clearMaxDuration = false,
   }) {
@@ -199,19 +195,20 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     final updatedSettings = currentSettings.copyWith(
       resolution: resolution,
       frameRate: frameRate,
+      audioNormalizeEnabled: audioNormalizeEnabled,
+      audioNormalizeFilter: audioNormalizeFilter,
     );
 
-    final updatedProject = state.project!.copyWith(
-      name: name,
-      defaultExportSettings: updatedSettings,
-      maxDuration: maxDuration,
-      clearMaxDuration: clearMaxDuration,
-    ).touch();
+    final updatedProject = state.project!
+        .copyWith(
+          name: name,
+          defaultExportSettings: updatedSettings,
+          maxDuration: maxDuration,
+          clearMaxDuration: clearMaxDuration,
+        )
+        .touch();
 
-    state = state.copyWith(
-      project: updatedProject,
-      isModified: true,
-    );
+    state = state.copyWith(project: updatedProject, isModified: true);
   }
 
   /// Close current project
@@ -258,8 +255,9 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
 }
 
 /// Provider for project state
-final projectProvider =
-    StateNotifierProvider<ProjectNotifier, ProjectState>((ref) {
+final projectProvider = StateNotifierProvider<ProjectNotifier, ProjectState>((
+  ref,
+) {
   return ProjectNotifier(ref);
 });
 

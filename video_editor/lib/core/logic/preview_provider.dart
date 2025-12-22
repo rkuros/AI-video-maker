@@ -653,6 +653,11 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       _scheduleTimelineStreamRestart(position, autoPlay: state.isPlaying);
       return;
     }
+
+    // Update current position even if player is not initialized
+    // This ensures the preview state reflects the playhead position
+    state = state.copyWith(currentPosition: position);
+
     if (_player == null) return;
     await _player!.seek(position);
   }

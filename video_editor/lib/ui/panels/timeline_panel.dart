@@ -104,6 +104,10 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   Widget _buildToolbar(Timeline timeline) {
     final timelineNotifier = ref.read(timelineProvider.notifier);
     final previewState = ref.watch(previewProvider);
+    final projectState = ref.watch(projectProvider);
+    final normalizeEnabled =
+        projectState.project?.defaultExportSettings.audioNormalizeEnabled ??
+        false;
 
     return Container(
       padding: const EdgeInsets.all(8.0),
@@ -222,6 +226,21 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
               onPressed: _generateHighlightTimeline,
               tooltip: 'Generate Highlight',
             ),
+            IconButton(
+              icon: Icon(
+                normalizeEnabled ? Icons.graphic_eq : Icons.graphic_eq_outlined,
+              ),
+              onPressed: projectState.hasProject
+                  ? () {
+                      ref
+                          .read(projectProvider.notifier)
+                          .updateProjectSettings(
+                            audioNormalizeEnabled: !normalizeEnabled,
+                          );
+                    }
+                  : null,
+              tooltip: 'Audio Normalize (Export)',
+            ),
             const VerticalDivider(),
             // Zoom controls
             const Text('Zoom: '),
@@ -334,12 +353,8 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
             if (x < 0) return;
             final position = _pixelsToDuration(x);
             ref.read(timelineProvider.notifier).setCurrentPosition(position);
-            final previewState = ref.read(previewProvider);
-            if (previewState.timelinePreviewPath != null &&
-                previewState.currentVideoPath ==
-                    previewState.timelinePreviewPath) {
-              ref.read(previewProvider.notifier).seekTo(position);
-            }
+            // Always update preview position when playhead changes
+            ref.read(previewProvider.notifier).seekTo(position);
           },
           child: Container(
             height: 30,
@@ -454,12 +469,8 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
                     ref
                         .read(timelineProvider.notifier)
                         .setCurrentPosition(position);
-                    final previewState = ref.read(previewProvider);
-                    if (previewState.timelinePreviewPath != null &&
-                        previewState.currentVideoPath ==
-                            previewState.timelinePreviewPath) {
-                      ref.read(previewProvider.notifier).seekTo(position);
-                    }
+                    // Always update preview position when playhead changes
+                    ref.read(previewProvider.notifier).seekTo(position);
                   },
                   child: Container(
                     key: contentKey,

@@ -156,12 +156,7 @@ class ExportEngine {
     final inputArgs = <String>[];
     for (final spec in inputs) {
       if (spec.mediaItem.type == MediaType.image) {
-        inputArgs.addAll([
-          '-loop',
-          '1',
-          '-t',
-          _seconds(spec.clipDuration),
-        ]);
+        inputArgs.addAll(['-loop', '1', '-t', _seconds(spec.clipDuration)]);
       }
       inputArgs.addAll(['-i', spec.mediaItem.filePath]);
     }
@@ -174,19 +169,20 @@ class ExportEngine {
       height: height,
       fps: fps,
       audioAvailability: audioAvailability,
+      audioNormalizeEnabled: settings.audioNormalizeEnabled,
+      audioNormalizeFilter: settings.audioNormalizeFilter,
       fastPreview: false,
     );
 
-    final sessionDir = await Directory.systemTemp.createTemp('video_editor_hls_');
+    final sessionDir = await Directory.systemTemp.createTemp(
+      'video_editor_hls_',
+    );
     final playlistPath = path.join(sessionDir.path, 'stream.m3u8');
     final segmentPattern = path.join(sessionDir.path, 'seg_%05d.m4s');
 
     final args = <String>[
       '-y',
-      if (useHardware) ...[
-        '-hwaccel',
-        'auto',
-      ],
+      if (useHardware) ...['-hwaccel', 'auto'],
       ...inputArgs,
       '-filter_complex',
       graph,
@@ -202,17 +198,9 @@ class ExportEngine {
 
     if (useHardware) {
       final bitrate = _getQualityBitrate(settings.quality, width, height);
-      args.addAll([
-        '-b:v',
-        bitrate,
-        '-maxrate',
-        bitrate,
-      ]);
+      args.addAll(['-b:v', bitrate, '-maxrate', bitrate]);
       if (hardwareEncoder == 'h264_videotoolbox') {
-        args.addAll([
-          '-allow_sw',
-          '1',
-        ]);
+        args.addAll(['-allow_sw', '1']);
       }
     } else {
       args.addAll([
@@ -300,7 +288,10 @@ class ExportEngine {
       throw Exception('Timeline has zero duration');
     }
 
-    final prepared = await _prepareTimelineForCoreMlDenoise(timeline, mediaLibrary);
+    final prepared = await _prepareTimelineForCoreMlDenoise(
+      timeline,
+      mediaLibrary,
+    );
     final effectiveTimeline = prepared.$1;
     final effectiveLibrary = prepared.$2;
     final cleanupDirs = prepared.$3;
@@ -363,12 +354,7 @@ class ExportEngine {
       final inputArgs = <String>[];
       for (final spec in inputs) {
         if (spec.mediaItem.type == MediaType.image) {
-          inputArgs.addAll([
-            '-loop',
-            '1',
-            '-t',
-            _seconds(spec.clipDuration),
-          ]);
+          inputArgs.addAll(['-loop', '1', '-t', _seconds(spec.clipDuration)]);
         }
         inputArgs.addAll(['-i', spec.mediaItem.filePath]);
       }
@@ -381,6 +367,8 @@ class ExportEngine {
         height: height,
         fps: fps,
         audioAvailability: audioAvailability,
+        audioNormalizeEnabled: settings.audioNormalizeEnabled,
+        audioNormalizeFilter: settings.audioNormalizeFilter,
       );
 
       // Detect hardware encoder
@@ -406,21 +394,13 @@ class ExportEngine {
       if (useHardware) {
         // Hardware encoders typically use bitrate-based encoding
         final bitrate = _getQualityBitrate(settings.quality, width, height);
-        args.addAll([
-          '-b:v',
-          bitrate,
-        ]);
+        args.addAll(['-b:v', bitrate]);
 
         // VideoToolbox works best with minimal extra settings
         // Let it auto-detect the best profile and level based on input
       } else {
         // Software encoder uses CRF
-        args.addAll([
-          '-crf',
-          crf.toString(),
-          '-preset',
-          settings.videoPreset,
-        ]);
+        args.addAll(['-crf', crf.toString(), '-preset', settings.videoPreset]);
       }
 
       args.addAll([
@@ -442,11 +422,7 @@ class ExportEngine {
         settings.outputPath,
       ]);
 
-      await _runWithProgress(
-        args,
-        duration,
-        onProgress,
-      );
+      await _runWithProgress(args, duration, onProgress);
     } finally {
       for (final dir in cleanupDirs) {
         try {
@@ -456,7 +432,8 @@ class ExportEngine {
     }
   }
 
-  Future<(Timeline, List<MediaItem>, List<Directory>)> _prepareTimelineForCoreMlDenoise(
+  Future<(Timeline, List<MediaItem>, List<Directory>)>
+  _prepareTimelineForCoreMlDenoise(
     Timeline timeline,
     List<MediaItem> mediaLibrary,
   ) async {
@@ -468,11 +445,13 @@ class ExportEngine {
     for (final track in timeline.tracks) {
       for (final clip in track.clips) {
         for (final effect in clip.effects) {
-          if (effect.type != 'auto_denoise' && effect.type != 'low_light_denoise') {
+          if (effect.type != 'auto_denoise' &&
+              effect.type != 'low_light_denoise') {
             continue;
           }
           final s = DenoiseSettings.fromJson(effect.parameters);
-          final wantsCoreMl = s.backend == DenoiseBackend.coreML || s.useAiModel;
+          final wantsCoreMl =
+              s.backend == DenoiseBackend.coreML || s.useAiModel;
           if (wantsCoreMl && (s.aiModelPath?.isNotEmpty ?? false)) {
             needsCoreMl = true;
             break;
@@ -486,7 +465,9 @@ class ExportEngine {
       return (timeline, mediaLibrary, const <Directory>[]);
     }
 
-    final tempDir = await Directory.systemTemp.createTemp('video_editor_coreml_');
+    final tempDir = await Directory.systemTemp.createTemp(
+      'video_editor_coreml_',
+    );
 
     final proxyCache = <String, MediaItem>{};
     final updatedMedia = [...mediaLibrary];
@@ -503,11 +484,13 @@ class ExportEngine {
 
         DenoiseSettings? denoiseSettings;
         for (final effect in clip.effects) {
-          if (effect.type != 'auto_denoise' && effect.type != 'low_light_denoise') {
+          if (effect.type != 'auto_denoise' &&
+              effect.type != 'low_light_denoise') {
             continue;
           }
           final s = DenoiseSettings.fromJson(effect.parameters);
-          final wantsCoreMl = s.backend == DenoiseBackend.coreML || s.useAiModel;
+          final wantsCoreMl =
+              s.backend == DenoiseBackend.coreML || s.useAiModel;
           if (wantsCoreMl && (s.aiModelPath?.isNotEmpty ?? false)) {
             denoiseSettings = s;
             break;
@@ -520,16 +503,19 @@ class ExportEngine {
         }
 
         final modelPath = denoiseSettings.aiModelPath!;
-        final modelExists = File(modelPath).existsSync() || Directory(modelPath).existsSync();
+        final modelExists =
+            File(modelPath).existsSync() || Directory(modelPath).existsSync();
         if (!modelExists) {
           updatedClips.add(clip);
           continue;
         }
 
-        final key = '${item.filePath}|${clip.sourceStart.inMilliseconds}|'
+        final key =
+            '${item.filePath}|${clip.sourceStart.inMilliseconds}|'
             '${clip.sourceDuration.inMilliseconds}|$modelPath';
 
-        final proxy = proxyCache[key] ??
+        final proxy =
+            proxyCache[key] ??
             MediaItem(
               name: '${item.name} (CoreML denoise)',
               filePath: path.join(tempDir.path, '${clip.id}.mp4'),
@@ -550,7 +536,9 @@ class ExportEngine {
         }
 
         final remainingEffects = clip.effects
-            .where((e) => e.type != 'auto_denoise' && e.type != 'low_light_denoise')
+            .where(
+              (e) => e.type != 'auto_denoise' && e.type != 'low_light_denoise',
+            )
             .toList();
 
         updatedClips.add(
@@ -590,10 +578,7 @@ class ExportEngine {
 
     try {
       // Get list of all available encoders once
-      final result = await Process.run(_ffmpeg, [
-        '-hide_banner',
-        '-encoders',
-      ]);
+      final result = await Process.run(_ffmpeg, ['-hide_banner', '-encoders']);
 
       if (result.exitCode != 0) {
         return null;
@@ -604,9 +589,9 @@ class ExportEngine {
       // List of hardware encoders to try, in order of preference
       final encodersToTry = [
         'h264_videotoolbox', // macOS VideoToolbox
-        'h264_nvenc',        // NVIDIA GPU
-        'h264_qsv',          // Intel Quick Sync Video
-        'h264_vaapi',        // Linux VA-API
+        'h264_nvenc', // NVIDIA GPU
+        'h264_qsv', // Intel Quick Sync Video
+        'h264_vaapi', // Linux VA-API
       ];
 
       // Check which encoders are available, return the first one found
@@ -631,6 +616,8 @@ class ExportEngine {
     required int height,
     required int fps,
     required Map<String, bool> audioAvailability,
+    required bool audioNormalizeEnabled,
+    required String audioNormalizeFilter,
     bool fastPreview = false,
   }) {
     final filters = <String>[];
@@ -651,13 +638,16 @@ class ExportEngine {
     final videoTracks = timeline.videoTracks;
     for (var trackIndex = 0; trackIndex < videoTracks.length; trackIndex++) {
       final track = videoTracks[trackIndex];
-      final trackInputs = inputs
-          .where((spec) => spec.track.id == track.id)
-          .where((spec) =>
-              spec.mediaItem.type == MediaType.video ||
-              spec.mediaItem.type == MediaType.image)
-          .toList()
-        ..sort((a, b) => a.clip.startTime.compareTo(b.clip.startTime));
+      final trackInputs =
+          inputs
+              .where((spec) => spec.track.id == track.id)
+              .where(
+                (spec) =>
+                    spec.mediaItem.type == MediaType.video ||
+                    spec.mediaItem.type == MediaType.image,
+              )
+              .toList()
+            ..sort((a, b) => a.clip.startTime.compareTo(b.clip.startTime));
 
       if (trackInputs.isEmpty) continue;
 
@@ -684,7 +674,8 @@ class ExportEngine {
       final clip = spec.clip;
       final track = spec.track;
 
-      final hasAudio = item.type == MediaType.audio || item.type == MediaType.video;
+      final hasAudio =
+          item.type == MediaType.audio || item.type == MediaType.video;
       if (!hasAudio || _isMuted(track, clip)) {
         continue;
       }
@@ -712,9 +703,7 @@ class ExportEngine {
 
       final delayMs = clipStart.inMilliseconds;
       final delayedLabel = 'adelay${spec.inputIndex}';
-      filters.add(
-        '[$audioLabel]adelay=$delayMs|$delayMs[$delayedLabel]',
-      );
+      filters.add('[$audioLabel]adelay=$delayMs|$delayMs[$delayedLabel]');
 
       final nextAudioLabel = 'abase${spec.inputIndex + 1}';
       filters.add(
@@ -726,40 +715,44 @@ class ExportEngine {
     }
 
     filters.add('[$currentVideoLabel]format=yuv420p[vout]');
-    filters.add('[$currentAudioLabel]anull[aout]');
+    if (audioNormalizeEnabled && audioNormalizeFilter.trim().isNotEmpty) {
+      filters.add('[$currentAudioLabel]$audioNormalizeFilter[aout]');
+    } else {
+      filters.add('[$currentAudioLabel]anull[aout]');
+    }
 
     return filters.join(';');
   }
 
-	  String _buildVideoTrackStream({
-	    required List<String> filters,
-	    required List<_InputSpec> trackInputs,
-	    required Duration timelineDuration,
-	    required int width,
-	    required int height,
-	    required int trackIndex,
-	    required int fps,
-      required bool fastPreview,
-	  }) {
-	    String? currentLabel;
-	    var currentDuration = Duration.zero;
-	    Clip? previousClip;
-	    var previousClipDuration = Duration.zero;
+  String _buildVideoTrackStream({
+    required List<String> filters,
+    required List<_InputSpec> trackInputs,
+    required Duration timelineDuration,
+    required int width,
+    required int height,
+    required int trackIndex,
+    required int fps,
+    required bool fastPreview,
+  }) {
+    String? currentLabel;
+    var currentDuration = Duration.zero;
+    Clip? previousClip;
+    var previousClipDuration = Duration.zero;
 
-	    for (var i = 0; i < trackInputs.length; i++) {
-	      final spec = trackInputs[i];
-	      final clip = spec.clip;
-	      final clipDuration = spec.clipDuration;
+    for (var i = 0; i < trackInputs.length; i++) {
+      final spec = trackInputs[i];
+      final clip = spec.clip;
+      final clipDuration = spec.clipDuration;
 
-	      final gap = clip.startTime - currentDuration;
-	      if (gap > Duration.zero) {
-	        final gapLabel = 'vgap_${trackIndex}_$i';
-	        filters.add(
-	          'color=c=black@0.0:s=${width}x$height:d=${_seconds(gap)},fps=$fps,format=rgba,setsar=1[$gapLabel]',
-	        );
-	        if (currentLabel == null) {
-	          currentLabel = gapLabel;
-	          currentDuration += gap;
+      final gap = clip.startTime - currentDuration;
+      if (gap > Duration.zero) {
+        final gapLabel = 'vgap_${trackIndex}_$i';
+        filters.add(
+          'color=c=black@0.0:s=${width}x$height:d=${_seconds(gap)},fps=$fps,format=rgba,setsar=1[$gapLabel]',
+        );
+        if (currentLabel == null) {
+          currentLabel = gapLabel;
+          currentDuration += gap;
         } else {
           final nextLabel = 'vseq_${trackIndex}_gap_$i';
           filters.add(
@@ -770,100 +763,106 @@ class ExportEngine {
         }
       }
 
-	      final clipLabel = 'vclip_${trackIndex}_$i';
-	      final clipFilters = <String>[
-	        'trim=start=${_seconds(clip.sourceStart)}:duration=${_seconds(clipDuration)}',
-	        'setpts=PTS-STARTPTS',
-	        'fps=$fps', // Normalize frame rate and timebase
-	        'scale=$width:$height:force_original_aspect_ratio=decrease',
-	        'pad=$width:$height:(ow-iw)/2:(oh-ih)/2',
-	        'setsar=1',
-	      ];
-	      clipFilters.addAll(_buildEffectFilters(clip.effects, fastPreview: fastPreview));
-	      clipFilters.addAll(_buildFadeFiltersForClip(clip, clipDuration));
-	      clipFilters.add('format=rgba');
+      final clipLabel = 'vclip_${trackIndex}_$i';
+      final clipFilters = <String>[
+        'trim=start=${_seconds(clip.sourceStart)}:duration=${_seconds(clipDuration)}',
+        'setpts=PTS-STARTPTS',
+        'fps=$fps', // Normalize frame rate and timebase
+        'scale=$width:$height:force_original_aspect_ratio=decrease',
+        'pad=$width:$height:(ow-iw)/2:(oh-ih)/2',
+        'setsar=1',
+      ];
+      clipFilters.addAll(
+        _buildEffectFilters(clip.effects, fastPreview: fastPreview),
+      );
+      clipFilters.addAll(_buildFadeFiltersForClip(clip, clipDuration));
+      clipFilters.add('format=rgba');
 
-	      filters.add(
-	        '[${spec.inputIndex}:v]${clipFilters.join(',')}[$clipLabel]',
-	      );
+      filters.add('[${spec.inputIndex}:v]${clipFilters.join(',')}[$clipLabel]');
       var clipOutLabel = clipLabel;
 
-	      if (currentLabel == null) {
-	        currentLabel = clipLabel;
-	        currentDuration += clipDuration;
-	        previousClip = clip;
-	        previousClipDuration = clipDuration;
-	        continue;
-	      }
+      if (currentLabel == null) {
+        currentLabel = clipLabel;
+        currentDuration += clipDuration;
+        previousClip = clip;
+        previousClipDuration = clipDuration;
+        continue;
+      }
 
-	      final transition = _pickTransition(previousClip, clip);
-	      if (transition != null && gap <= Duration.zero) {
-	        final maxTransitionMs = min(previousClipDuration.inMilliseconds, clipDuration.inMilliseconds);
-	        final maxTransition = Duration(milliseconds: maxTransitionMs);
-	        final transitionDuration = transition.duration <= maxTransition
-	            ? transition.duration
-	            : maxTransition;
-	        if (transitionDuration > Duration.zero) {
-            // NOTE:
-            // xfade intrinsically overlaps clips, which shortens the output timeline.
-            // Our GUI timeline currently represents clips as non-overlapping blocks,
-            // so using xfade when clips are just "butted" (gap == 0) causes a visible
-            // desync between GUI positions and preview playback.
-            //
-            // We only use xfade when the timeline explicitly overlaps clips (gap < 0).
-            // Otherwise we fall back to a simple fade-out/fade-in while keeping duration.
-            if (gap < Duration.zero) {
-              final prevNormLabel = 'vseq_${trackIndex}_xfadeprev_$i';
-              filters.add('[$currentLabel]settb=1/$fps[$prevNormLabel]');
-              final nextNormLabel = 'vseq_${trackIndex}_xfadenext_$i';
-              filters.add('[$clipLabel]settb=1/$fps[$nextNormLabel]');
+      final transition = _pickTransition(previousClip, clip);
+      if (transition != null && gap <= Duration.zero) {
+        final maxTransitionMs = min(
+          previousClipDuration.inMilliseconds,
+          clipDuration.inMilliseconds,
+        );
+        final maxTransition = Duration(milliseconds: maxTransitionMs);
+        final transitionDuration = transition.duration <= maxTransition
+            ? transition.duration
+            : maxTransition;
+        if (transitionDuration > Duration.zero) {
+          // NOTE:
+          // xfade intrinsically overlaps clips, which shortens the output timeline.
+          // Our GUI timeline currently represents clips as non-overlapping blocks,
+          // so using xfade when clips are just "butted" (gap == 0) causes a visible
+          // desync between GUI positions and preview playback.
+          //
+          // We only use xfade when the timeline explicitly overlaps clips (gap < 0).
+          // Otherwise we fall back to a simple fade-out/fade-in while keeping duration.
+          if (gap < Duration.zero) {
+            final prevNormLabel = 'vseq_${trackIndex}_xfadeprev_$i';
+            filters.add('[$currentLabel]settb=1/$fps[$prevNormLabel]');
+            final nextNormLabel = 'vseq_${trackIndex}_xfadenext_$i';
+            filters.add('[$clipLabel]settb=1/$fps[$nextNormLabel]');
 
-              final transitionName = _xfadeTransitionName(transition);
-              final offset = max(
-                0.0,
-                _secondsDouble(currentDuration) - _secondsDouble(transitionDuration),
-              );
-              final nextLabel = 'vseq_${trackIndex}_xfade_$i';
-              filters.add(
-                '[$prevNormLabel][$nextNormLabel]'
-                'xfade=transition=$transitionName:duration=${_seconds(transitionDuration)}'
-                ':offset=${offset.toStringAsFixed(6)},settb=1/$fps[$nextLabel]',
-              );
-              currentLabel = nextLabel;
-              currentDuration = currentDuration + clipDuration - transitionDuration;
-              previousClip = clip;
-              previousClipDuration = clipDuration;
-              continue;
-            } else {
-              final fadeOutStart = max(
-                0.0,
-                _secondsDouble(currentDuration) - _secondsDouble(transitionDuration),
-              );
-              final prevFadedLabel = 'vseq_${trackIndex}_fadeprev_$i';
-              filters.add(
-                '[$currentLabel]'
-                'fade=t=out:st=${fadeOutStart.toStringAsFixed(6)}:d=${_seconds(transitionDuration)}'
-                '[$prevFadedLabel]',
-              );
-              currentLabel = prevFadedLabel;
-              final clipFadeLabel = 'vclip_${trackIndex}_${i}_fadein';
-              filters.add(
-                '[$clipLabel]fade=t=in:st=0:d=${_seconds(transitionDuration)}[$clipFadeLabel]',
-              );
-              clipOutLabel = clipFadeLabel;
-            }
-	        }
-	      }
+            final transitionName = _xfadeTransitionName(transition);
+            final offset = max(
+              0.0,
+              _secondsDouble(currentDuration) -
+                  _secondsDouble(transitionDuration),
+            );
+            final nextLabel = 'vseq_${trackIndex}_xfade_$i';
+            filters.add(
+              '[$prevNormLabel][$nextNormLabel]'
+              'xfade=transition=$transitionName:duration=${_seconds(transitionDuration)}'
+              ':offset=${offset.toStringAsFixed(6)},settb=1/$fps[$nextLabel]',
+            );
+            currentLabel = nextLabel;
+            currentDuration =
+                currentDuration + clipDuration - transitionDuration;
+            previousClip = clip;
+            previousClipDuration = clipDuration;
+            continue;
+          } else {
+            final fadeOutStart = max(
+              0.0,
+              _secondsDouble(currentDuration) -
+                  _secondsDouble(transitionDuration),
+            );
+            final prevFadedLabel = 'vseq_${trackIndex}_fadeprev_$i';
+            filters.add(
+              '[$currentLabel]'
+              'fade=t=out:st=${fadeOutStart.toStringAsFixed(6)}:d=${_seconds(transitionDuration)}'
+              '[$prevFadedLabel]',
+            );
+            currentLabel = prevFadedLabel;
+            final clipFadeLabel = 'vclip_${trackIndex}_${i}_fadein';
+            filters.add(
+              '[$clipLabel]fade=t=in:st=0:d=${_seconds(transitionDuration)}[$clipFadeLabel]',
+            );
+            clipOutLabel = clipFadeLabel;
+          }
+        }
+      }
 
       final nextLabel = 'vseq_${trackIndex}_$i';
       filters.add(
         '[$currentLabel][$clipOutLabel]concat=n=2:v=1:a=0,settb=1/$fps[$nextLabel]',
       );
-	      currentLabel = nextLabel;
-	      currentDuration += clipDuration;
-	      previousClip = clip;
-	      previousClipDuration = clipDuration;
-	    }
+      currentLabel = nextLabel;
+      currentDuration += clipDuration;
+      previousClip = clip;
+      previousClipDuration = clipDuration;
+    }
 
     if (currentLabel == null) {
       return 'vbase0';
@@ -931,18 +930,29 @@ class ExportEngine {
   List<String> _buildFadeFiltersForClip(Clip clip, Duration clipDuration) {
     final filters = <String>[];
     if (clip.inTransition?.type == TransitionType.fadeIn) {
-      final duration =
-          _transitionDuration(clip.inTransition!.duration, clipDuration, clipDuration);
+      final duration = _transitionDuration(
+        clip.inTransition!.duration,
+        clipDuration,
+        clipDuration,
+      );
       if (duration > Duration.zero) {
         filters.add('fade=t=in:st=0:d=${_seconds(duration)}');
       }
     }
     if (clip.outTransition?.type == TransitionType.fadeOut) {
-      final duration =
-          _transitionDuration(clip.outTransition!.duration, clipDuration, clipDuration);
+      final duration = _transitionDuration(
+        clip.outTransition!.duration,
+        clipDuration,
+        clipDuration,
+      );
       if (duration > Duration.zero) {
-        final start = max(0.0, _secondsDouble(clipDuration) - _secondsDouble(duration));
-        filters.add('fade=t=out:st=${start.toStringAsFixed(3)}:d=${_seconds(duration)}');
+        final start = max(
+          0.0,
+          _secondsDouble(clipDuration) - _secondsDouble(duration),
+        );
+        filters.add(
+          'fade=t=out:st=${start.toStringAsFixed(3)}:d=${_seconds(duration)}',
+        );
       }
     }
     return filters;
@@ -951,18 +961,29 @@ class ExportEngine {
   List<String> _buildAudioTransitionFilters(Clip clip, Duration clipDuration) {
     final filters = <String>[];
     if (clip.inTransition?.type == TransitionType.fadeIn) {
-      final duration =
-          _transitionDuration(clip.inTransition!.duration, clipDuration, clipDuration);
+      final duration = _transitionDuration(
+        clip.inTransition!.duration,
+        clipDuration,
+        clipDuration,
+      );
       if (duration > Duration.zero) {
         filters.add('afade=t=in:st=0:d=${_seconds(duration)}');
       }
     }
     if (clip.outTransition?.type == TransitionType.fadeOut) {
-      final duration =
-          _transitionDuration(clip.outTransition!.duration, clipDuration, clipDuration);
+      final duration = _transitionDuration(
+        clip.outTransition!.duration,
+        clipDuration,
+        clipDuration,
+      );
       if (duration > Duration.zero) {
-        final start = max(0.0, _secondsDouble(clipDuration) - _secondsDouble(duration));
-        filters.add('afade=t=out:st=${start.toStringAsFixed(3)}:d=${_seconds(duration)}');
+        final start = max(
+          0.0,
+          _secondsDouble(clipDuration) - _secondsDouble(duration),
+        );
+        filters.add(
+          'afade=t=out:st=${start.toStringAsFixed(3)}:d=${_seconds(duration)}',
+        );
       }
     }
     return filters;
@@ -1062,85 +1083,91 @@ class ExportEngine {
     Function(ExportProgress progress) onProgress,
   ) async {
     _cancelRequested = false;
-    print('Starting export: totalDuration = ${totalDuration.inSeconds}s (${totalDuration.inMilliseconds}ms)');
+    print(
+      'Starting export: totalDuration = ${totalDuration.inSeconds}s (${totalDuration.inMilliseconds}ms)',
+    );
     final process = await Process.start(_ffmpeg, args);
     _currentProcess = process;
     final totalMs = max(1, totalDuration.inMilliseconds);
     final startTime = DateTime.now();
 
     final stderrBuffer = StringBuffer();
-    final stderrFuture = process.stderr
-        .transform(utf8.decoder)
-        .forEach((data) {
-          stderrBuffer.write(data);
-        });
+    final stderrFuture = process.stderr.transform(utf8.decoder).forEach((data) {
+      stderrBuffer.write(data);
+    });
 
     int? currentFrame;
     double? currentFps;
     int? currentTimeMs;
     int lastReportedPercentage = -1;
 
-    final stdoutFuture = process.stdout
-        .transform(utf8.decoder)
-        .forEach((line) {
-          for (final chunk in line.split('\n')) {
-            if (chunk.isEmpty) continue;
+    final stdoutFuture = process.stdout.transform(utf8.decoder).forEach((line) {
+      for (final chunk in line.split('\n')) {
+        if (chunk.isEmpty) continue;
 
-            // Debug: Print raw progress line
-            if (chunk.contains('=')) {
-              print('FFmpeg progress: $chunk');
+        // Debug: Print raw progress line
+        if (chunk.contains('=')) {
+          print('FFmpeg progress: $chunk');
+        }
+
+        if (chunk.startsWith('out_time_us=')) {
+          // FFmpeg outputs time in microseconds, convert to milliseconds
+          final timeUs = int.tryParse(chunk.split('=').last.trim()) ?? 0;
+          currentTimeMs = timeUs ~/ 1000;
+          print('Parsed time (ms): $currentTimeMs / $totalMs');
+        } else if (chunk.startsWith('out_time_ms=')) {
+          // Some FFmpeg versions output milliseconds directly
+          currentTimeMs = int.tryParse(chunk.split('=').last.trim()) ?? 0;
+          print('Parsed time (ms): $currentTimeMs / $totalMs');
+        } else if (chunk.startsWith('frame=')) {
+          currentFrame = int.tryParse(chunk.split('=').last.trim());
+        } else if (chunk.startsWith('fps=')) {
+          currentFps = double.tryParse(chunk.split('=').last.trim());
+        }
+
+        // Report progress when we have time information
+        if (currentTimeMs != null && currentTimeMs! > 0 && totalMs > 0) {
+          final progressValue = (currentTimeMs! / totalMs).clamp(0.0, 1.0);
+          final currentPercentage = (progressValue * 100).round();
+
+          // Only report progress if percentage changed significantly (at least 1%)
+          // This reduces UI updates and makes progress smoother
+          if (currentPercentage != lastReportedPercentage &&
+              currentPercentage >= 0) {
+            lastReportedPercentage = currentPercentage;
+
+            final elapsed = DateTime.now().difference(startTime);
+
+            Duration? estimatedRemaining;
+            if (progressValue > 0.001 && progressValue < 1.0) {
+              // Calculate remaining time: (elapsed / progress) * (1 - progress)
+              // This is more stable than: (elapsed / progress) - elapsed
+              final remainingRatio = (1.0 - progressValue) / progressValue;
+              final remainingMs = (elapsed.inMilliseconds * remainingRatio)
+                  .round();
+              // Clamp to reasonable range (0 to 24 hours)
+              estimatedRemaining = Duration(
+                milliseconds: remainingMs.clamp(0, 86400000),
+              );
             }
 
-            if (chunk.startsWith('out_time_us=')) {
-              // FFmpeg outputs time in microseconds, convert to milliseconds
-              final timeUs = int.tryParse(chunk.split('=').last.trim()) ?? 0;
-              currentTimeMs = timeUs ~/ 1000;
-              print('Parsed time (ms): $currentTimeMs / $totalMs');
-            } else if (chunk.startsWith('out_time_ms=')) {
-              // Some FFmpeg versions output milliseconds directly
-              currentTimeMs = int.tryParse(chunk.split('=').last.trim()) ?? 0;
-              print('Parsed time (ms): $currentTimeMs / $totalMs');
-            } else if (chunk.startsWith('frame=')) {
-              currentFrame = int.tryParse(chunk.split('=').last.trim());
-            } else if (chunk.startsWith('fps=')) {
-              currentFps = double.tryParse(chunk.split('=').last.trim());
-            }
+            print(
+              'Progress: ${currentPercentage}%, Remaining: ${estimatedRemaining?.inSeconds ?? 0}s',
+            );
 
-            // Report progress when we have time information
-            if (currentTimeMs != null && currentTimeMs! > 0 && totalMs > 0) {
-              final progressValue = (currentTimeMs! / totalMs).clamp(0.0, 1.0);
-              final currentPercentage = (progressValue * 100).round();
-
-              // Only report progress if percentage changed significantly (at least 1%)
-              // This reduces UI updates and makes progress smoother
-              if (currentPercentage != lastReportedPercentage && currentPercentage >= 0) {
-                lastReportedPercentage = currentPercentage;
-
-                final elapsed = DateTime.now().difference(startTime);
-
-                Duration? estimatedRemaining;
-                if (progressValue > 0.001 && progressValue < 1.0) {
-                  // Calculate remaining time: (elapsed / progress) * (1 - progress)
-                  // This is more stable than: (elapsed / progress) - elapsed
-                  final remainingRatio = (1.0 - progressValue) / progressValue;
-                  final remainingMs = (elapsed.inMilliseconds * remainingRatio).round();
-                  // Clamp to reasonable range (0 to 24 hours)
-                  estimatedRemaining = Duration(milliseconds: remainingMs.clamp(0, 86400000));
-                }
-
-                print('Progress: ${currentPercentage}%, Remaining: ${estimatedRemaining?.inSeconds ?? 0}s');
-
-                onProgress(ExportProgress(
-                  progress: progressValue,
-                  currentFrame: currentFrame,
-                  fps: currentFps,
-                  elapsed: elapsed,
-                  estimatedRemaining: estimatedRemaining,
-                ));
-              }
-            }
+            onProgress(
+              ExportProgress(
+                progress: progressValue,
+                currentFrame: currentFrame,
+                fps: currentFps,
+                elapsed: elapsed,
+                estimatedRemaining: estimatedRemaining,
+              ),
+            );
           }
-        });
+        }
+      }
+    });
 
     // Wait for both stdout and stderr to be fully read
     await Future.wait([stderrFuture, stdoutFuture]);
@@ -1163,13 +1190,15 @@ class ExportEngine {
     }
 
     // Final progress report
-    onProgress(ExportProgress(
-      progress: 1.0,
-      currentFrame: currentFrame,
-      fps: currentFps,
-      elapsed: DateTime.now().difference(startTime),
-      estimatedRemaining: Duration.zero,
-    ));
+    onProgress(
+      ExportProgress(
+        progress: 1.0,
+        currentFrame: currentFrame,
+        fps: currentFps,
+        elapsed: DateTime.now().difference(startTime),
+        estimatedRemaining: Duration.zero,
+      ),
+    );
   }
 
   String _formatArgsForError(List<String> args) {
@@ -1181,8 +1210,7 @@ class ExportEngine {
     return '${rendered.substring(0, maxLen)}...';
   }
 
-  double _secondsDouble(Duration duration) =>
-      duration.inMilliseconds / 1000.0;
+  double _secondsDouble(Duration duration) => duration.inMilliseconds / 1000.0;
 
   String _seconds(Duration duration) =>
       (duration.inMilliseconds / 1000.0).toStringAsFixed(3);
@@ -1200,8 +1228,8 @@ class ExportEngine {
             (effect.parameters['intensity'] as num?)?.toDouble() ?? 1.0;
         return [
           'eq=brightness=${(brightness * intensity).toStringAsFixed(3)}'
-          ':contrast=${(1.0 + contrast * intensity).toStringAsFixed(3)}'
-          ':saturation=${(1.0 + saturation * intensity).toStringAsFixed(3)}',
+              ':contrast=${(1.0 + contrast * intensity).toStringAsFixed(3)}'
+              ':saturation=${(1.0 + saturation * intensity).toStringAsFixed(3)}',
         ].join(',');
       case 'filter':
         final filterType =
@@ -1239,8 +1267,10 @@ class ExportEngine {
     // Core Image CINoiseReduction:
     // - inputNoiseLevel: 0..0.1 (default 0.02)
     // - inputSharpness: 0..2 (default 0.4)
-    final noiseLevel =
-        (settings.strength * settings.lumaStrength * 0.1).clamp(0.0, 0.1);
+    final noiseLevel = (settings.strength * settings.lumaStrength * 0.1).clamp(
+      0.0,
+      0.1,
+    );
 
     final sharpness = settings.preserveDetails
         ? (0.4 + (1.0 - settings.strength) * 1.2).clamp(0.0, 2.0)
@@ -1346,20 +1376,32 @@ class ExportEngine {
 
     if (pixelCount <= 640 * 480) {
       // SD (480p or lower)
-      baseBitrate = quality == Quality.high ? 2.5 :
-                    quality == Quality.standard ? 1.5 : 1.0;
+      baseBitrate = quality == Quality.high
+          ? 2.5
+          : quality == Quality.standard
+          ? 1.5
+          : 1.0;
     } else if (pixelCount <= 1280 * 720) {
       // HD (720p)
-      baseBitrate = quality == Quality.high ? 5.0 :
-                    quality == Quality.standard ? 3.0 : 2.0;
+      baseBitrate = quality == Quality.high
+          ? 5.0
+          : quality == Quality.standard
+          ? 3.0
+          : 2.0;
     } else if (pixelCount <= 1920 * 1080) {
       // Full HD (1080p)
-      baseBitrate = quality == Quality.high ? 8.0 :
-                    quality == Quality.standard ? 5.0 : 3.0;
+      baseBitrate = quality == Quality.high
+          ? 8.0
+          : quality == Quality.standard
+          ? 5.0
+          : 3.0;
     } else {
       // 4K and above
-      baseBitrate = quality == Quality.high ? 25.0 :
-                    quality == Quality.standard ? 15.0 : 10.0;
+      baseBitrate = quality == Quality.high
+          ? 25.0
+          : quality == Quality.standard
+          ? 15.0
+          : 10.0;
     }
 
     return '${baseBitrate.toStringAsFixed(1)}M';
@@ -1418,8 +1460,9 @@ class ExportProgress {
   String get elapsedFormatted => _formatDuration(elapsed);
 
   /// Format estimated remaining time as string (e.g., "02:45")
-  String get remainingFormatted =>
-      estimatedRemaining != null ? _formatDuration(estimatedRemaining!) : '--:--';
+  String get remainingFormatted => estimatedRemaining != null
+      ? _formatDuration(estimatedRemaining!)
+      : '--:--';
 
   String _formatDuration(Duration duration) {
     final totalSeconds = duration.inSeconds;

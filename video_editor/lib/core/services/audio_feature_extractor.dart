@@ -5,11 +5,14 @@ import 'package:fftea/fftea.dart';
 
 /// Service for extracting audio features from videos
 class AudioFeatureExtractor {
+  static const String analysisNormalizeFilter = 'dynaudnorm';
+
   /// Extract audio from video and save as WAV
   Future<String?> extractAudio(
     String videoPath, {
     Duration startTime = Duration.zero,
     Duration? duration,
+    String? audioFilter,
   }) async {
     final tempDir = Directory.systemTemp.path;
     final audioPath =
@@ -26,6 +29,10 @@ class AudioFeatureExtractor {
       ],
       '-i', videoPath,
       '-vn', // No video
+      if (audioFilter != null && audioFilter.trim().isNotEmpty) ...[
+        '-af',
+        audioFilter,
+      ],
       '-acodec', 'pcm_s16le', // 16-bit PCM
       '-ar', '44100', // 44.1kHz sample rate
       '-ac', '1', // Mono
@@ -412,6 +419,180 @@ class AudioFeatureExtractor {
   double _toDb(double amplitude) {
     if (amplitude <= 0) return -90.0;
     return (20.0 * log(amplitude) / ln10).clamp(-90.0, 0.0);
+  }
+
+  Future<List<Beat>> _detectBeatsFromWav(String audioPath) async {
+    final beats = <Beat>[];
+
+    final result = await Process.run('ffmpeg', [
+      '-i',
+      audioPath,
+      '-af',
+      'silencedetect=n=-30dB:d=0.1',
+      '-f',
+      'null',
+      '-',
+    ]);
+
+    final output = result.stderr.toString();
+    final lines = output.split('\n');
+
+    Duration? lastSilenceEnd;
+    for (final line in lines) {
+      final silenceEndMatch = RegExp(
+        r'silence_end:\s*([\d.]+)',
+      ).firstMatch(line);
+      if (silenceEndMatch != null) {
+        final timestamp = double.parse(silenceEndMatch.group(1)!);
+        final duration = Duration(milliseconds: (timestamp * 1000).round());
+
+        double? tempo;
+        if (lastSilenceEnd != null) {
+          final interval =
+              duration.inMilliseconds - lastSilenceEnd.inMilliseconds;
+          if (interval > 0) {
+            tempo = 60000.0 / interval;
+          }
+        }
+
+        beats.add(Beat(timestamp: duration, strength: 0.7, tempo: tempo));
+
+        lastSilenceEnd = duration;
+      }
+    }
+
+    return beats;
+  }
+
+  Future<List<SpeechSegment>> _detectSpeechFromWav(String audioPath) async {
+    final speechSegments = <SpeechSegment>[];
+
+    final result = await Process.run('ffmpeg', [
+      '-i',
+      audioPath,
+      '-af',
+      'silencedetect=n=-35dB:d=0.3',
+      '-f',
+      'null',
+      '-',
+    ]);
+
+    final output = result.stderr.toString();
+    final lines = output.split('\n');
+
+    Duration? speechStart;
+    for (final line in lines) {
+      final silenceStartMatch = RegExp(
+        r'silence_start:\s*([\d.]+)',
+      ).firstMatch(line);
+      final silenceEndMatch = RegExp(
+        r'silence_end:\s*([\d.]+)',
+      ).firstMatch(line);
+
+      if (silenceEndMatch != null) {
+        final timestamp = double.parse(silenceEndMatch.group(1)!);
+        speechStart = Duration(milliseconds: (timestamp * 1000).round());
+      } else if (silenceStartMatch != null && speechStart != null) {
+        final timestamp = double.parse(silenceStartMatch.group(1)!);
+        final speechEnd = Duration(milliseconds: (timestamp * 1000).round());
+
+        if ((speechEnd - speechStart).inMilliseconds > 500) {
+          speechSegments.add(
+            SpeechSegment(
+              startTime: speechStart,
+              endTime: speechEnd,
+              confidence: 0.7,
+              hasSpeech: true,
+            ),
+          );
+        }
+
+        speechStart = null;
+      }
+    }
+
+    return speechSegments;
+  }
+
+  Future<
+    ({
+      List<VolumeSegment> volumeSegments,
+      List<EnergySegment> energySegments,
+      List<SpeechSegment> speechSegments,
+      List<Beat> beats,
+    })
+  >
+  analyzeHighlightAudio(
+    String videoPath,
+    Duration videoDuration, {
+    Duration startTime = Duration.zero,
+    int samplePoints = 30,
+  }) async {
+    final audioPath = await extractAudio(
+      videoPath,
+      startTime: startTime,
+      duration: videoDuration,
+      audioFilter: analysisNormalizeFilter,
+    );
+    if (audioPath == null) {
+      return (
+        volumeSegments: <VolumeSegment>[],
+        energySegments: <EnergySegment>[],
+        speechSegments: <SpeechSegment>[],
+        beats: <Beat>[],
+      );
+    }
+
+    try {
+      final volumeSegments = await _analyzeVolumeFromWav(
+        audioPath,
+        videoDuration,
+        samplePoints: samplePoints,
+      );
+      final frequencySegments = await _analyzeFrequencyFromWav(
+        audioPath,
+        videoDuration,
+        samplePoints: samplePoints,
+      );
+
+      final energySegments = <EnergySegment>[];
+      for (
+        int i = 0;
+        i < min(volumeSegments.length, frequencySegments.length);
+        i++
+      ) {
+        final volume = volumeSegments[i];
+        final frequency = frequencySegments[i];
+
+        final volumeEnergy = (volume.meanVolume + volume.maxVolume) / 2;
+        final frequencyEnergy =
+            (frequency.midFrequency + frequency.highFrequency) / 2;
+        final energy = (volumeEnergy * 0.6 + frequencyEnergy * 0.4);
+
+        energySegments.add(
+          EnergySegment(
+            startTime: volume.startTime,
+            endTime: volume.endTime,
+            energy: energy,
+            excitement: energy,
+          ),
+        );
+      }
+
+      final speechSegments = await _detectSpeechFromWav(audioPath);
+      final beats = await _detectBeatsFromWav(audioPath);
+
+      return (
+        volumeSegments: volumeSegments,
+        energySegments: energySegments,
+        speechSegments: speechSegments,
+        beats: beats,
+      );
+    } finally {
+      try {
+        await File(audioPath).delete();
+      } catch (_) {}
+    }
   }
 
   /// Read audio samples from WAV file

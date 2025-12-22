@@ -45,6 +45,7 @@ class MultimodalFeatureScorer {
           'framesAesthetic': 5,
           'framesOcr': 15,
           'audioSamplePoints': 10,
+          'audioNormalize': AudioFeatureExtractor.analysisNormalizeFilter,
         },
       );
       final cached = await HighlightFeatureCache.instance.getFeatures(key);
@@ -69,7 +70,7 @@ class MultimodalFeatureScorer {
         segmentDuration,
         startTime: startTime,
       );
-      final audioFuture = _audioExtractor.analyzeVolumeAndEnergy(
+      final audioFuture = _audioExtractor.analyzeHighlightAudio(
         videoPath,
         segmentDuration,
         startTime: startTime,
@@ -98,17 +99,6 @@ class MultimodalFeatureScorer {
         frames: frames5,
       );
 
-      final speechSegments = await _audioExtractor.detectSpeech(
-        videoPath,
-        segmentDuration,
-        startTime: startTime,
-      );
-      final beats = await _audioExtractor.detectBeats(
-        videoPath,
-        startTime: startTime,
-        duration: segmentDuration,
-      );
-
       // Extract text features
       final textSegments = await _textExtractor.extractTextFromVideo(
         videoPath,
@@ -134,8 +124,8 @@ class MultimodalFeatureScorer {
         aestheticScore: _averageAesthetic(aestheticSegments),
         volumeLevel: _averageVolume(audio.volumeSegments),
         energyLevel: _averageEnergy(audio.energySegments),
-        hasSpeech: speechSegments.isNotEmpty,
-        beatCount: beats.length,
+        hasSpeech: audio.speechSegments.isNotEmpty,
+        beatCount: audio.beats.length,
         hasText: textSegments.isNotEmpty,
         keywordScore: _averageKeywordScore(keywordSegments),
       );
