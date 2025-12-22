@@ -26,6 +26,8 @@ enum PlaybackSpeed {
 class PreviewState {
   final Player? player;
   final VideoController? videoController;
+  final Player? comparePlayer;
+  final VideoController? compareVideoController;
   final bool isPlaying;
   final bool isLoading;
   final Duration currentPosition;
@@ -36,6 +38,9 @@ class PreviewState {
   final String? error;
   final bool isEffectPreview;
   final String? effectPreviewPath;
+  final String? effectOriginalPath;
+  final Duration effectClipSourceStart;
+  final Duration effectClipDuration;
   final String? timelinePreviewPath;
   final bool isTimelineStreaming;
   final Duration timelineStreamStartOffset;
@@ -44,6 +49,8 @@ class PreviewState {
   const PreviewState({
     this.player,
     this.videoController,
+    this.comparePlayer,
+    this.compareVideoController,
     this.isPlaying = false,
     this.isLoading = false,
     this.currentPosition = Duration.zero,
@@ -54,6 +61,9 @@ class PreviewState {
     this.error,
     this.isEffectPreview = false,
     this.effectPreviewPath,
+    this.effectOriginalPath,
+    this.effectClipSourceStart = Duration.zero,
+    this.effectClipDuration = Duration.zero,
     this.timelinePreviewPath,
     this.isTimelineStreaming = false,
     this.timelineStreamStartOffset = Duration.zero,
@@ -65,6 +75,8 @@ class PreviewState {
   PreviewState copyWith({
     Object? player = _unset,
     Object? videoController = _unset,
+    Object? comparePlayer = _unset,
+    Object? compareVideoController = _unset,
     bool? isPlaying,
     bool? isLoading,
     Duration? currentPosition,
@@ -75,6 +87,9 @@ class PreviewState {
     Object? error = _unset,
     bool? isEffectPreview,
     Object? effectPreviewPath = _unset,
+    Object? effectOriginalPath = _unset,
+    Duration? effectClipSourceStart,
+    Duration? effectClipDuration,
     Object? timelinePreviewPath = _unset,
     bool? isTimelineStreaming,
     Duration? timelineStreamStartOffset,
@@ -85,6 +100,11 @@ class PreviewState {
       videoController: identical(videoController, _unset)
           ? this.videoController
           : videoController as VideoController?,
+      comparePlayer:
+          identical(comparePlayer, _unset) ? this.comparePlayer : comparePlayer as Player?,
+      compareVideoController: identical(compareVideoController, _unset)
+          ? this.compareVideoController
+          : compareVideoController as VideoController?,
       isPlaying: isPlaying ?? this.isPlaying,
       isLoading: isLoading ?? this.isLoading,
       currentPosition: currentPosition ?? this.currentPosition,
@@ -101,6 +121,11 @@ class PreviewState {
       effectPreviewPath: identical(effectPreviewPath, _unset)
           ? this.effectPreviewPath
           : effectPreviewPath as String?,
+      effectOriginalPath: identical(effectOriginalPath, _unset)
+          ? this.effectOriginalPath
+          : effectOriginalPath as String?,
+      effectClipSourceStart: effectClipSourceStart ?? this.effectClipSourceStart,
+      effectClipDuration: effectClipDuration ?? this.effectClipDuration,
       timelinePreviewPath: identical(timelinePreviewPath, _unset)
           ? this.timelinePreviewPath
           : timelinePreviewPath as String?,
@@ -123,6 +148,9 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
 
   Player? _player;
   VideoController? _videoController;
+  Player? _comparePlayer;
+  VideoController? _compareVideoController;
+  Timer? _effectSyncTimer;
   StreamSubscription<bool>? _playingSub;
   StreamSubscription<Duration>? _positionSub;
   StreamSubscription<Duration?>? _durationSub;
@@ -134,6 +162,14 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
   Duration? _pendingSeek;
   Timeline? _lastStreamTimeline;
   List<MediaItem>? _lastStreamMediaLibrary;
+
+  bool _returnWasStreaming = false;
+  bool _returnWasPlaying = false;
+  Duration _returnTimelinePosition = Duration.zero;
+  Timeline? _returnStreamTimeline;
+  List<MediaItem>? _returnStreamMediaLibrary;
+  String? _returnVideoPath;
+  Duration _returnVideoPosition = Duration.zero;
 
   static String get _previewLogPath =>
       '${Directory.systemTemp.path}/video_editor_preview.log';
@@ -168,6 +204,38 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     _player = player;
     _videoController = videoController;
     state = state.copyWith(player: player, videoController: videoController);
+  }
+
+  void _ensureComparePlayerInitialized() {
+    if (_comparePlayer != null && _compareVideoController != null) return;
+    final player = Player();
+    final videoController = VideoController(player);
+    _comparePlayer = player;
+    _compareVideoController = videoController;
+    state = state.copyWith(comparePlayer: player, compareVideoController: videoController);
+  }
+
+  Future<void> _stopEffectPreview() async {
+    _effectSyncTimer?.cancel();
+    _effectSyncTimer = null;
+    try {
+      await _comparePlayer?.stop();
+    } catch (_) {}
+    _comparePlayer?.dispose();
+    _comparePlayer = null;
+    _compareVideoController = null;
+
+    await _cleanupEffectPreviewTemps();
+
+    state = state.copyWith(
+      isEffectPreview: false,
+      effectPreviewPath: null,
+      effectOriginalPath: null,
+      effectClipSourceStart: Duration.zero,
+      effectClipDuration: Duration.zero,
+      comparePlayer: null,
+      compareVideoController: null,
+    );
   }
 
   Future<void> _cleanupEffectPreviewTemps() async {
@@ -519,6 +587,9 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       _ensurePlayerInitialized();
       _log('play()');
       await _player!.play();
+      if (state.isEffectPreview && _comparePlayer != null) {
+        await _comparePlayer!.play();
+      }
     } catch (e, st) {
       _log('play() failed', error: e, stackTrace: st);
       state = state.copyWith(error: 'Failed to play: $e');
@@ -531,6 +602,9 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       if (_player == null) return;
       _log('pause()');
       await _player!.pause();
+      if (state.isEffectPreview && _comparePlayer != null) {
+        await _comparePlayer!.pause();
+      }
     } catch (e, st) {
       _log('pause() failed', error: e, stackTrace: st);
       state = state.copyWith(error: 'Failed to pause: $e');
@@ -548,6 +622,17 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
 
   /// Seek to a specific position
   Future<void> seekTo(Duration position) async {
+    if (state.isEffectPreview && _player != null && _comparePlayer != null) {
+      final clipDuration = state.effectClipDuration;
+      if (clipDuration > Duration.zero) {
+        var pos = position;
+        if (pos < Duration.zero) pos = Duration.zero;
+        if (pos > clipDuration) pos = clipDuration;
+        await _player!.seek(pos);
+        await _comparePlayer!.seek(state.effectClipSourceStart + pos);
+        return;
+      }
+    }
     if (state.isTimelineStreaming) {
       // Restart stream from the requested timeline position for seamless behavior.
       _scheduleTimelineStreamRestart(position, autoPlay: state.isPlaying);
@@ -562,11 +647,15 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     state = state.copyWith(speed: speed);
     if (_player == null) return;
     await _player!.setRate(speed.value);
+    if (state.isEffectPreview && _comparePlayer != null) {
+      await _comparePlayer!.setRate(speed.value);
+    }
   }
 
   /// Unload current video
   Future<void> unloadVideo() async {
     await _detachTimelineStream();
+    await _stopEffectPreview();
 
     state = state.copyWith(
       isPlaying: false,
@@ -578,6 +667,9 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       error: null,
       isEffectPreview: false,
       effectPreviewPath: null,
+      effectOriginalPath: null,
+      effectClipSourceStart: Duration.zero,
+      effectClipDuration: Duration.zero,
       timelinePreviewPath: null,
       isTimelineStreaming: false,
       timelineStreamStartOffset: Duration.zero,
@@ -674,41 +766,91 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     }
   }
 
-  /// Generate effect preview
-  /// NOTE: Full FFmpeg integration requires additional setup
-  /// This is a placeholder that marks the preview state
-  Future<void> generateEffectPreview(List<Effect> effects) async {
-    if (state.currentVideoPath == null || effects.isEmpty) {
-      return;
-    }
+  Future<void> generateEffectPreview(
+    Clip clip,
+    MediaItem mediaItem,
+  ) async {
+    if (clip.effects.isEmpty) return;
+    if (mediaItem.filePath.isEmpty) return;
 
     try {
+      // Save current playback context so we can restore on exit.
+      _returnWasStreaming = state.isTimelineStreaming;
+      _returnWasPlaying = state.isPlaying;
+      _returnTimelinePosition = state.isTimelineStreaming
+          ? state.timelineStreamStartOffset + state.currentPosition
+          : Duration.zero;
+      _returnStreamTimeline = _lastStreamTimeline;
+      _returnStreamMediaLibrary = _lastStreamMediaLibrary;
+      _returnVideoPath = state.currentVideoPath;
+      _returnVideoPosition = state.currentPosition;
+
       state = state.copyWith(isLoading: true, error: null);
 
+      await _detachTimelineStream();
       await pause();
-      await _cleanupEffectPreviewTemps();
+      await _stopEffectPreview();
 
-      var inputPath = state.currentVideoPath!;
+      // Render the selected clip segment with effects applied.
+      final outputPath = await _createTempOutputPath(suffix: 'effect');
+      _effectPreviewTempPaths.add(outputPath);
+      await _videoEngine.renderClipWithEffects(
+        mediaItem.filePath,
+        outputPath,
+        sourceStart: clip.sourceStart,
+        duration: clip.sourceDuration > Duration.zero ? clip.sourceDuration : clip.duration,
+        effects: clip.effects,
+      );
 
-      for (final effect in effects) {
-        final tempFile = await _createTempOutputPath();
-        _effectPreviewTempPaths.add(tempFile);
-        await _videoEngine.applyEffect(inputPath, tempFile, effect);
-        inputPath = tempFile;
-      }
+      final clipDuration =
+          clip.sourceDuration > Duration.zero ? clip.sourceDuration : clip.duration;
 
       _ensurePlayerInitialized();
-      final player = _player!;
-      await player.open(Media(inputPath), play: false);
-      await player.setRate(state.speed.value);
+      _ensureComparePlayerInitialized();
+
+      await _player!.open(Media(outputPath), play: false);
+      await _player!.setRate(state.speed.value);
+
+      await _comparePlayer!.open(Media(mediaItem.filePath), play: false);
+      await _comparePlayer!.setRate(state.speed.value);
+      await _comparePlayer!.seek(clip.sourceStart);
 
       state = state.copyWith(
         isLoading: false,
         isEffectPreview: true,
-        effectPreviewPath: inputPath,
-        playbackVideoPath: inputPath,
+        effectPreviewPath: outputPath,
+        effectOriginalPath: mediaItem.filePath,
+        effectClipSourceStart: clip.sourceStart,
+        effectClipDuration: clipDuration,
+        currentVideoPath: outputPath,
+        playbackVideoPath: outputPath,
+        timelinePreviewPath: null,
+        isTimelineStreaming: false,
+        timelineStreamStartOffset: Duration.zero,
         error: null,
       );
+
+      _effectSyncTimer?.cancel();
+      _effectSyncTimer = Timer.periodic(const Duration(milliseconds: 300), (_) async {
+        if (!state.isEffectPreview || _player == null || _comparePlayer == null) return;
+        final pos = _player!.state.position;
+        final target = state.effectClipSourceStart + pos;
+        final beforePos = _comparePlayer!.state.position;
+        final drift = (beforePos - target).inMilliseconds.abs();
+        if (drift > 150) {
+          try {
+            await _comparePlayer!.seek(target);
+          } catch (_) {}
+        }
+        final d = state.effectClipDuration;
+        if (d > Duration.zero && pos >= d) {
+          try {
+            await pause();
+            await _player!.seek(Duration.zero);
+            await _comparePlayer!.seek(state.effectClipSourceStart);
+          } catch (_) {}
+        }
+      });
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
@@ -722,18 +864,33 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     if (!state.isEffectPreview) {
       return;
     }
+    await _stopEffectPreview();
 
-    final originalPath = state.currentVideoPath;
-
-    await _cleanupEffectPreviewTemps();
-
-    if (originalPath != null) {
-      await loadVideo(originalPath);
-    } else {
-      state = state.copyWith(
-        isEffectPreview: false,
-        effectPreviewPath: null,
+    // Restore previous playback context.
+    if (_returnWasStreaming &&
+        _returnStreamTimeline != null &&
+        _returnStreamMediaLibrary != null) {
+      await loadTimelinePreview(
+        _returnStreamTimeline!,
+        _returnStreamMediaLibrary!,
+        preset: state.timelinePreviewPreset,
+        startPosition: _returnTimelinePosition,
       );
+      if (_returnWasPlaying) {
+        await play();
+      }
+      return;
+    }
+
+    if (_returnVideoPath != null) {
+      await loadVideo(_returnVideoPath!);
+      if (_returnVideoPosition > Duration.zero) {
+        await seekTo(_returnVideoPosition);
+      }
+      if (_returnWasPlaying) {
+        await play();
+      }
+      return;
     }
   }
 

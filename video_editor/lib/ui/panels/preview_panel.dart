@@ -46,36 +46,59 @@ class PreviewPanel extends ConsumerWidget {
     return Stack(
       children: [
         Center(
-          child: Video(controller: state.videoController!),
-        ),
-        // Effect preview badge
-        if (state.isEffectPreview)
-          Positioned(
-            top: 16,
-            right: 16,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.blue.withValues(alpha: 0.9),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.auto_fix_high, size: 16, color: Colors.white),
-                  SizedBox(width: 4),
-                  Text(
-                    'Effect Preview',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
+          child: state.isEffectPreview &&
+                  state.compareVideoController != null &&
+                  state.effectOriginalPath != null
+              ? Row(
+                  children: [
+                    Expanded(
+                      child: _buildLabeledVideo(
+                        controller: state.compareVideoController!,
+                        label: 'Before',
+                      ),
                     ),
-                  ),
-                ],
+                    Expanded(
+                      child: _buildLabeledVideo(
+                        controller: state.videoController!,
+                        label: 'After',
+                      ),
+                    ),
+                  ],
+                )
+              : Video(controller: state.videoController!),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLabeledVideo({
+    required VideoController controller,
+    required String label,
+  }) {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: Video(controller: controller),
+        ),
+        Positioned(
+          top: 12,
+          left: 12,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
               ),
             ),
           ),
+        ),
       ],
     );
   }

@@ -620,7 +620,17 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
                         if (previewState.isEffectPreview) {
                           ref.read(previewProvider.notifier).exitEffectPreview();
                         } else {
-                          ref.read(previewProvider.notifier).generateEffectPreview(clip.effects);
+                          final mediaLibrary = ref.read(mediaLibraryProvider);
+                          final mediaItem = mediaLibrary.firstWhere(
+                            (m) => m.id == clip.mediaItemId,
+                            orElse: () => MediaItem(
+                              filePath: '',
+                              name: 'Unknown',
+                              type: MediaType.video,
+                              duration: Duration.zero,
+                            ),
+                          );
+                          ref.read(previewProvider.notifier).generateEffectPreview(clip, mediaItem);
                         }
                       },
                 icon: Icon(
@@ -745,8 +755,20 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
               onChanged: (value) {
                 if (selectedTrackId == null) return;
                 if (value && !hasDenoising) {
+                  // Remove any existing denoise effects before adding new one
+                  var updatedClip = clip;
+                  final existingAuto = _findEffectByType(clip, 'auto_denoise');
+                  final existingManual = _findEffectByType(clip, 'low_light_denoise');
+
+                  if (existingAuto != null) {
+                    updatedClip = updatedClip.removeEffect(existingAuto.id);
+                  }
+                  if (existingManual != null) {
+                    updatedClip = updatedClip.removeEffect(existingManual.id);
+                  }
+
                   final effect = AutoDenoiseEffect(settings: settings, autoMode: false);
-                  _updateSelectedClip(clip.addEffect(effect));
+                  _updateSelectedClip(updatedClip.addEffect(effect));
                 } else if (!value) {
                   if (autoDenoiseEffect != null) {
                     _updateSelectedClip(clip.removeEffect(autoDenoiseEffect.id));

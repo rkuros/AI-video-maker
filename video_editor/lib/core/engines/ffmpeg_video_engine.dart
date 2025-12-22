@@ -115,6 +115,47 @@ class FFmpegVideoEngine implements VideoEngine {
     ]);
   }
 
+  Future<void> renderClipWithEffects(
+    String inputPath,
+    String outputPath, {
+    required Duration sourceStart,
+    required Duration duration,
+    required List<Effect> effects,
+  }) async {
+    final chain = effects
+        .map(_effectFilter)
+        .where((f) => f.trim().isNotEmpty)
+        .join(',');
+
+    final args = <String>[
+      '-y',
+      '-ss',
+      _formatTimestamp(sourceStart),
+      '-t',
+      _formatTimestamp(duration),
+      '-i',
+      inputPath,
+      if (chain.isNotEmpty) ...['-vf', chain],
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-crf',
+      '23',
+      '-pix_fmt',
+      'yuv420p',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '128k',
+      '-movflags',
+      '+faststart',
+      outputPath,
+    ];
+
+    await _run(_ffmpeg, args);
+  }
+
   @override
   Future<void> applyDenoise(
     String inputPath,

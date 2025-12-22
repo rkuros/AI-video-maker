@@ -92,32 +92,38 @@ class VideoAnalysisService {
     final chromaStrength = (analysis.noiseLevel * 0.8 + 0.3).clamp(0.3, 1.0);
 
     // Determine which filters to use based on level
-    final useNlmeans = level.index >= DenoiseLevel.balanced.index;
-    final useBm3d = level.index >= DenoiseLevel.high.index;
-    final useVaguedenoiser = level == DenoiseLevel.maximum;
+    // CRITICAL: nlmeans and bm3d are EXTREMELY slow (CPU-only, no GPU/NPU support)
+    // For practical use, we ONLY use hqdn3d (fast, temporal+spatial, good quality)
+    // - fast: light hqdn3d settings (real-time capable)
+    // - balanced: moderate hqdn3d settings
+    // - high: strong hqdn3d settings
+    // - maximum: very strong hqdn3d settings
+    final useNlmeans = false;  // Disabled - too slow (0.3fps)
+    final useBm3d = false;     // Disabled - extremely slow
+    final useVaguedenoiser = false;  // Disabled - not worth the cost
+    final useDctdnoiz = false;       // Disabled - not worth the cost
 
-    // nlmeans strength based on noise level
-    final nlmeansStrength = (analysis.noiseLevel * 0.9 + 0.3).clamp(0.3, 1.0);
-
-    // bm3d sigma based on noise level (higher noise = higher sigma)
-    final bm3dSigma = (analysis.noiseLevel * 10 + 2).clamp(2.0, 12.0);
+    // Adjust hqdn3d strength based on level for practical performance
+    final adjustedLumaStrength = lumaStrength * (0.7 + level.index * 0.15);
+    final adjustedChromaStrength = chromaStrength * (0.7 + level.index * 0.15);
+    final adjustedTemporalRadius = min(5, temporalRadius + level.index);
 
     return DenoiseSettings(
       strength: strength,
-      temporalRadius: temporalRadius,
-      lumaStrength: lumaStrength,
-      chromaStrength: chromaStrength,
+      temporalRadius: adjustedTemporalRadius,
+      lumaStrength: adjustedLumaStrength.clamp(0.5, 1.0),
+      chromaStrength: adjustedChromaStrength.clamp(0.3, 1.0),
       preserveDetails: true,
       level: level,
       useNlmeans: useNlmeans,
       useBm3d: useBm3d,
       useVaguedenoiser: useVaguedenoiser,
-      useDctdnoiz: false,
+      useDctdnoiz: useDctdnoiz,
       useAiModel: false,
-      nlmeansStrength: nlmeansStrength,
-      nlmeansPatchSize: 7,
-      nlmeansResearchSize: 15,
-      bm3dSigma: bm3dSigma,
+      nlmeansStrength: 0.5,  // Unused but needs a value
+      nlmeansPatchSize: 5,    // Unused but needs a value
+      nlmeansResearchSize: 11, // Unused but needs a value
+      bm3dSigma: 3.0,         // Unused but needs a value
     );
   }
 

@@ -785,8 +785,15 @@ class ExportEngine {
     List<Effect> effects, {
     required bool fastPreview,
   }) {
-    final filters = <String>[];
+    // Deduplicate effects by type - only use the last effect of each type
+    // This prevents accidental stacking when users modify effect settings
+    final effectsByType = <String, Effect>{};
     for (final effect in effects) {
+      effectsByType[effect.type] = effect;
+    }
+
+    final filters = <String>[];
+    for (final effect in effectsByType.values) {
       final filter = _effectFilter(effect, fastPreview: fastPreview);
       if (filter.isNotEmpty) {
         filters.add(filter);
