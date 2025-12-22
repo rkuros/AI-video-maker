@@ -13,7 +13,6 @@ import 'package:video_editor/core/services/auto_editor_service.dart';
 import 'package:video_editor/core/services/beat_analyzer_service.dart';
 import 'package:video_editor/core/services/highlight_generator_service.dart';
 import 'package:video_editor/core/engines/ffmpeg_video_engine.dart';
-import 'package:video_editor/ui/dialogs/highlight_editor_dialog.dart';
 import 'package:video_editor/ui/dialogs/highlight_generation_dialog.dart';
 import 'package:video_editor/ui/dialogs/preview_loading_dialog.dart';
 
@@ -53,12 +52,19 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onHorizontalScroll);
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onHorizontalScroll);
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onHorizontalScroll() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   @override
@@ -206,12 +212,6 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
             onPressed: _autoImportMedia,
             tooltip: 'Auto Import',
           ),
-          // Highlight editor button
-          IconButton(
-            icon: const Icon(Icons.auto_awesome),
-            onPressed: _openHighlightEditor,
-            tooltip: 'Edit Highlights',
-          ),
           IconButton(
             icon: const Icon(Icons.auto_fix_high),
             onPressed: _autoEditTimeline,
@@ -263,6 +263,11 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   ) {
     return LayoutBuilder(
       builder: (context, constraints) {
+        final horizontalOffset =
+            _scrollController.hasClients ? _scrollController.offset : 0.0;
+        final playheadLeft = _trackHeaderWidth +
+            _durationToPixels(currentPosition) -
+            horizontalOffset;
         return SingleChildScrollView(
           child: Stack(
             children: [
@@ -294,10 +299,10 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
               ),
             ),
             // Max duration marker
-            _buildMaxDurationMarker(),
+            _buildMaxDurationMarker(horizontalOffset: horizontalOffset),
             // Playhead
             Positioned(
-              left: _trackHeaderWidth + _durationToPixels(currentPosition),
+              left: playheadLeft,
               top: 0,
               bottom: 0,
               child: Container(
@@ -1061,7 +1066,7 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     );
   }
 
-  Widget _buildMaxDurationMarker() {
+  Widget _buildMaxDurationMarker({required double horizontalOffset}) {
     final projectState = ref.watch(projectProvider);
     final timeline = ref.watch(timelineProvider);
 
@@ -1075,7 +1080,7 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     final isExceeding = actualDuration > maxDuration;
 
     return Positioned(
-      left: _trackHeaderWidth + maxDurationX,
+      left: _trackHeaderWidth + maxDurationX - horizontalOffset,
       top: 0,
       bottom: 0,
       child: Column(
@@ -1142,39 +1147,6 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
 
     final contentWidth = _durationToPixels(displayDuration).clamp(800.0, double.infinity);
     return _trackHeaderWidth + contentWidth;
-  }
-
-  Future<void> _openHighlightEditor() async {
-    final videoTracks = ref.read(videoTracksProvider);
-
-    if (videoTracks.isEmpty) return;
-
-    // Get clips from the first video track
-    final track = videoTracks.first;
-    if (track.clips.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No clips in timeline to edit'),
-        ),
-      );
-      return;
-    }
-
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (context) => HighlightEditorDialog(
-        trackId: track.id,
-        highlightClips: track.clips,
-      ),
-    );
-
-    if (result == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Highlight clips updated'),
-        ),
-      );
-    }
   }
 
   Future<void> _autoEditTimeline() async {

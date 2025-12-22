@@ -41,6 +41,8 @@ HighlightPreferences _$HighlightPreferencesFromJson(
   preferHighMotion: json['preferHighMotion'] as bool? ?? true,
   preferFaces: json['preferFaces'] as bool? ?? true,
   preferSpeechPeaks: json['preferSpeechPeaks'] as bool? ?? true,
+  oneSegmentPerClip: json['oneSegmentPerClip'] as bool? ?? false,
+  requireAllClips: json['requireAllClips'] as bool? ?? false,
 );
 
 Map<String, dynamic> _$HighlightPreferencesToJson(
@@ -52,6 +54,8 @@ Map<String, dynamic> _$HighlightPreferencesToJson(
   'preferHighMotion': instance.preferHighMotion,
   'preferFaces': instance.preferFaces,
   'preferSpeechPeaks': instance.preferSpeechPeaks,
+  'oneSegmentPerClip': instance.oneSegmentPerClip,
+  'requireAllClips': instance.requireAllClips,
 };
 
 UserPreferenceProfile _$UserPreferenceProfileFromJson(

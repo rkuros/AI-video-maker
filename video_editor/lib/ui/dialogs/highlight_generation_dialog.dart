@@ -21,10 +21,7 @@ class HighlightGenerationRequest {
 class HighlightGenerationDialog extends StatefulWidget {
   final List<MediaItem> mediaLibrary;
 
-  const HighlightGenerationDialog({
-    super.key,
-    required this.mediaLibrary,
-  });
+  const HighlightGenerationDialog({super.key, required this.mediaLibrary});
 
   @override
   State<HighlightGenerationDialog> createState() =>
@@ -40,6 +37,8 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
   bool _preferHighMotion = true;
   bool _preferFaces = true;
   bool _preferSpeechPeaks = true;
+  bool _oneSegmentPerClip = false;
+  bool _requireAllClips = false;
 
   List<MediaItem> get _audioItems =>
       widget.mediaLibrary.where((m) => m.type == MediaType.audio).toList();
@@ -82,6 +81,8 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
                       preferHighMotion: _preferHighMotion,
                       preferFaces: _preferFaces,
                       preferSpeechPeaks: _preferSpeechPeaks,
+                      oneSegmentPerClip: _oneSegmentPerClip,
+                      requireAllClips: _requireAllClips,
                       minGapSeconds: _pattern.minGapSeconds,
                       diversityWeight: _pattern.diversityWeight,
                     ),
@@ -146,18 +147,9 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
         border: OutlineInputBorder(),
       ),
       items: const [
-        DropdownMenuItem(
-          value: Duration(seconds: 30),
-          child: Text('30秒'),
-        ),
-        DropdownMenuItem(
-          value: Duration(seconds: 60),
-          child: Text('60秒'),
-        ),
-        DropdownMenuItem(
-          value: Duration(seconds: 90),
-          child: Text('90秒'),
-        ),
+        DropdownMenuItem(value: Duration(seconds: 30), child: Text('30秒')),
+        DropdownMenuItem(value: Duration(seconds: 60), child: Text('60秒')),
+        DropdownMenuItem(value: Duration(seconds: 90), child: Text('90秒')),
       ],
       onChanged: (value) {
         if (value == null) return;
@@ -174,12 +166,7 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
         border: OutlineInputBorder(),
       ),
       items: HighlightPattern.allPatterns
-          .map(
-            (p) => DropdownMenuItem(
-              value: p,
-              child: Text(p.name),
-            ),
-          )
+          .map((p) => DropdownMenuItem(value: p, child: Text(p.name)))
           .toList(),
       onChanged: (value) {
         if (value == null) return;
@@ -192,10 +179,7 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
-          '嗜好（重視ポイント）',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
+        const Text('嗜好（重視ポイント）', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
@@ -215,6 +199,18 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
           value: _preferSpeechPeaks,
           onChanged: (v) => setState(() => _preferSpeechPeaks = v),
         ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('1クリップにつき1セグメント'),
+          value: _oneSegmentPerClip,
+          onChanged: (v) => setState(() => _oneSegmentPerClip = v),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('全クリップを最低1回使う'),
+          value: _requireAllClips,
+          onChanged: (v) => setState(() => _requireAllClips = v),
+        ),
       ],
     );
   }
@@ -229,19 +225,12 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
         helperText: enabled ? null : 'Beat-based のときのみ使用',
       ),
       items: [
-        const DropdownMenuItem<MediaItem?>(
-          value: null,
-          child: Text('なし'),
-        ),
+        const DropdownMenuItem<MediaItem?>(value: null, child: Text('なし')),
         ..._audioItems.map(
-          (a) => DropdownMenuItem<MediaItem?>(
-            value: a,
-            child: Text(a.name),
-          ),
+          (a) => DropdownMenuItem<MediaItem?>(value: a, child: Text(a.name)),
         ),
       ],
       onChanged: enabled ? (value) => setState(() => _bgm = value) : null,
     );
   }
 }
-

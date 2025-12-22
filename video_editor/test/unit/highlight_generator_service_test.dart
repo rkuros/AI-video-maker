@@ -52,5 +52,93 @@ void main() {
       expect(ordered[i].startTime, ordered[i - 1].endTime);
     }
   });
-}
 
+  test(
+    'Time-based highlight can require at least one segment per clip',
+    () async {
+      final baseTrack = Track(type: TrackType.video, name: 'V1');
+      var base = Timeline().addTrack(baseTrack);
+
+      base = base.addClipToTrack(
+        baseTrack.id,
+        Clip(
+          mediaItemId: 'm1',
+          startTime: Duration.zero,
+          endTime: const Duration(seconds: 6),
+          sourceStart: Duration.zero,
+          sourceDuration: const Duration(seconds: 6),
+        ),
+      );
+      base = base.addClipToTrack(
+        baseTrack.id,
+        Clip(
+          mediaItemId: 'm2',
+          startTime: const Duration(seconds: 6),
+          endTime: const Duration(seconds: 12),
+          sourceStart: Duration.zero,
+          sourceDuration: const Duration(seconds: 6),
+        ),
+      );
+      base = base.addClipToTrack(
+        baseTrack.id,
+        Clip(
+          mediaItemId: 'm3',
+          startTime: const Duration(seconds: 12),
+          endTime: const Duration(seconds: 18),
+          sourceStart: Duration.zero,
+          sourceDuration: const Duration(seconds: 6),
+        ),
+      );
+
+      final service = HighlightGeneratorService(
+        BeatAnalyzerService(FFmpegVideoEngine()),
+        [],
+      );
+      final highlight = await service.generateTimeBasedHighlight(
+        base,
+        const Duration(seconds: 3),
+        preferences: const HighlightPreferences(requireAllClips: true),
+      );
+
+      final outTrack = highlight.videoTracks.single;
+      final outMediaIds = outTrack.clips.map((c) => c.mediaItemId).toSet();
+      expect(outMediaIds, containsAll(<String>['m1', 'm2', 'm3']));
+      expect(
+        outTrack.clips.fold(Duration.zero, (acc, c) => acc + c.duration),
+        const Duration(seconds: 3),
+      );
+    },
+  );
+
+  test('Requiring all clips fails when target duration is too short', () async {
+    final baseTrack = Track(type: TrackType.video, name: 'V1');
+    var base = Timeline().addTrack(baseTrack);
+
+    for (var i = 0; i < 4; i++) {
+      base = base.addClipToTrack(
+        baseTrack.id,
+        Clip(
+          mediaItemId: 'm$i',
+          startTime: Duration(seconds: i * 6),
+          endTime: Duration(seconds: (i + 1) * 6),
+          sourceStart: Duration.zero,
+          sourceDuration: const Duration(seconds: 6),
+        ),
+      );
+    }
+
+    final service = HighlightGeneratorService(
+      BeatAnalyzerService(FFmpegVideoEngine()),
+      [],
+    );
+
+    expect(
+      () => service.generateTimeBasedHighlight(
+        base,
+        const Duration(seconds: 3),
+        preferences: const HighlightPreferences(requireAllClips: true),
+      ),
+      throwsA(isA<StateError>()),
+    );
+  });
+}

@@ -83,6 +83,7 @@ class FFmpegVideoEngine implements VideoEngine {
     int height = 180,
   }) async {
     final args = [
+      if (Platform.isMacOS) ...['-hwaccel', 'videotoolbox'],
       '-ss',
       _formatTimestamp(timestamp),
       '-i',
@@ -98,8 +99,17 @@ class FFmpegVideoEngine implements VideoEngine {
       '-',
     ];
 
-    final bytes = await _runAndCollect(_ffmpeg, args);
-    return bytes;
+    try {
+      final bytes = await _runAndCollect(_ffmpeg, args);
+      return bytes;
+    } catch (_) {
+      if (!Platform.isMacOS) rethrow;
+      final fallbackArgs = args
+          .where((a) => a != 'videotoolbox' && a != '-hwaccel')
+          .toList();
+      final bytes = await _runAndCollect(_ffmpeg, fallbackArgs);
+      return bytes;
+    }
   }
 
   @override
@@ -137,23 +147,24 @@ class FFmpegVideoEngine implements VideoEngine {
     Directory? coreMlTempDir;
     try {
       final coreMlEffect = effects.cast<Effect?>().firstWhere(
-            (e) =>
-                e != null &&
-                (e.type == 'auto_denoise' || e.type == 'low_light_denoise') &&
-                (DenoiseSettings.fromJson(e.parameters).backend ==
-                        DenoiseBackend.coreML ||
-                    DenoiseSettings.fromJson(e.parameters).useAiModel) &&
-                ((DenoiseSettings.fromJson(e.parameters).aiModelPath?.isNotEmpty ??
-                    false)),
-            orElse: () => null,
-          );
+        (e) =>
+            e != null &&
+            (e.type == 'auto_denoise' || e.type == 'low_light_denoise') &&
+            (DenoiseSettings.fromJson(e.parameters).backend ==
+                    DenoiseBackend.coreML ||
+                DenoiseSettings.fromJson(e.parameters).useAiModel) &&
+            ((DenoiseSettings.fromJson(e.parameters).aiModelPath?.isNotEmpty ??
+                false)),
+        orElse: () => null,
+      );
 
       if (Platform.isMacOS && coreMlEffect != null) {
         final s = DenoiseSettings.fromJson(coreMlEffect.parameters);
         final modelPath = s.aiModelPath!;
         if (File(modelPath).existsSync() || Directory(modelPath).existsSync()) {
-          coreMlTempDir =
-              await Directory.systemTemp.createTemp('video_editor_coreml_clip_');
+          coreMlTempDir = await Directory.systemTemp.createTemp(
+            'video_editor_coreml_clip_',
+          );
           final denoisedPath = path.join(coreMlTempDir.path, 'denoised.mp4');
 
           await CoreMlDenoise.denoiseVideo(
@@ -167,8 +178,10 @@ class FFmpegVideoEngine implements VideoEngine {
           effectiveInputPath = denoisedPath;
           effectiveSourceStart = Duration.zero;
           effectiveEffects = effects
-              .where((e) =>
-                  e.type != 'auto_denoise' && e.type != 'low_light_denoise')
+              .where(
+                (e) =>
+                    e.type != 'auto_denoise' && e.type != 'low_light_denoise',
+              )
               .toList();
         }
       }
@@ -186,10 +199,15 @@ class FFmpegVideoEngine implements VideoEngine {
         }
       }
       if (outTransition?.type == TransitionType.fadeOut) {
-        final fadeOutDuration = _clampDuration(outTransition!.duration, duration);
+        final fadeOutDuration = _clampDuration(
+          outTransition!.duration,
+          duration,
+        );
         if (fadeOutDuration > Duration.zero) {
           final startTime = duration - fadeOutDuration;
-          filters.add('fade=t=out:st=${_formatTimestamp(startTime)}:d=${_formatTimestamp(fadeOutDuration)}');
+          filters.add(
+            'fade=t=out:st=${_formatTimestamp(startTime)}:d=${_formatTimestamp(fadeOutDuration)}',
+          );
         }
       }
 
@@ -200,14 +218,21 @@ class FFmpegVideoEngine implements VideoEngine {
       if (inTransition?.type == TransitionType.fadeIn) {
         final fadeInDuration = _clampDuration(inTransition!.duration, duration);
         if (fadeInDuration > Duration.zero) {
-          audioFilters.add('afade=t=in:st=0:d=${_formatTimestamp(fadeInDuration)}');
+          audioFilters.add(
+            'afade=t=in:st=0:d=${_formatTimestamp(fadeInDuration)}',
+          );
         }
       }
       if (outTransition?.type == TransitionType.fadeOut) {
-        final fadeOutDuration = _clampDuration(outTransition!.duration, duration);
+        final fadeOutDuration = _clampDuration(
+          outTransition!.duration,
+          duration,
+        );
         if (fadeOutDuration > Duration.zero) {
           final startTime = duration - fadeOutDuration;
-          audioFilters.add('afade=t=out:st=${_formatTimestamp(startTime)}:d=${_formatTimestamp(fadeOutDuration)}');
+          audioFilters.add(
+            'afade=t=out:st=${_formatTimestamp(startTime)}:d=${_formatTimestamp(fadeOutDuration)}',
+          );
         }
       }
       final audioChain = audioFilters.join(',');
@@ -232,10 +257,7 @@ class FFmpegVideoEngine implements VideoEngine {
           '4M',
           '-maxrate',
           '4M',
-          if (hardwareEncoder == 'h264_videotoolbox') ...[
-            '-allow_sw',
-            '1',
-          ],
+          if (hardwareEncoder == 'h264_videotoolbox') ...['-allow_sw', '1'],
         ] else ...[
           '-preset',
           'veryfast',
@@ -271,10 +293,7 @@ class FFmpegVideoEngine implements VideoEngine {
     _hardwareEncoderChecked = true;
 
     try {
-      final result = await Process.run(_ffmpeg, [
-        '-hide_banner',
-        '-encoders',
-      ]);
+      final result = await Process.run(_ffmpeg, ['-hide_banner', '-encoders']);
 
       if (result.exitCode != 0) {
         return null;
@@ -395,17 +414,12 @@ class FFmpegVideoEngine implements VideoEngine {
   Future<ProcessResult> _run(String executable, List<String> args) async {
     final result = await Process.run(executable, args);
     if (result.exitCode != 0) {
-      throw Exception(
-        '$executable failed: ${result.stderr ?? result.stdout}',
-      );
+      throw Exception('$executable failed: ${result.stderr ?? result.stdout}');
     }
     return result;
   }
 
-  Future<Uint8List> _runAndCollect(
-    String executable,
-    List<String> args,
-  ) async {
+  Future<Uint8List> _runAndCollect(String executable, List<String> args) async {
     final process = await Process.start(executable, args);
     final bytes = <int>[];
     process.stdout.listen(bytes.addAll);
@@ -464,8 +478,10 @@ class FFmpegVideoEngine implements VideoEngine {
   }
 
   String _buildCoreImageNoiseReductionFilter(DenoiseSettings settings) {
-    final noiseLevel =
-        (settings.strength * settings.lumaStrength * 0.1).clamp(0.0, 0.1);
+    final noiseLevel = (settings.strength * settings.lumaStrength * 0.1).clamp(
+      0.0,
+      0.1,
+    );
 
     final sharpness = settings.preserveDetails
         ? (0.4 + (1.0 - settings.strength) * 1.2).clamp(0.0, 2.0)
@@ -527,10 +543,14 @@ class FFmpegVideoEngine implements VideoEngine {
   String _effectFilter(Effect effect) {
     switch (effect.type) {
       case 'color_adjustment':
-        final brightness = (effect.parameters['brightness'] as num?)?.toDouble() ?? 0.0;
-        final contrast = (effect.parameters['contrast'] as num?)?.toDouble() ?? 0.0;
-        final saturation = (effect.parameters['saturation'] as num?)?.toDouble() ?? 0.0;
-        final intensity = (effect.parameters['intensity'] as num?)?.toDouble() ?? 1.0;
+        final brightness =
+            (effect.parameters['brightness'] as num?)?.toDouble() ?? 0.0;
+        final contrast =
+            (effect.parameters['contrast'] as num?)?.toDouble() ?? 0.0;
+        final saturation =
+            (effect.parameters['saturation'] as num?)?.toDouble() ?? 0.0;
+        final intensity =
+            (effect.parameters['intensity'] as num?)?.toDouble() ?? 1.0;
         final eq = [
           'brightness=${brightness * intensity}',
           'contrast=${1.0 + contrast * intensity}',
@@ -538,8 +558,10 @@ class FFmpegVideoEngine implements VideoEngine {
         ].join(':');
         return 'eq=$eq';
       case 'filter':
-        final filterType = (effect.parameters['filterType'] as String?)?.toLowerCase() ?? '';
-        final intensity = (effect.parameters['intensity'] as num?)?.toDouble() ?? 1.0;
+        final filterType =
+            (effect.parameters['filterType'] as String?)?.toLowerCase() ?? '';
+        final intensity =
+            (effect.parameters['intensity'] as num?)?.toDouble() ?? 1.0;
         if (filterType.contains('sepia')) {
           return 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131:0,format=yuv420p,eq=saturation=${0.5 + 0.5 * intensity}';
         }

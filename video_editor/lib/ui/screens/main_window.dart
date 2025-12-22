@@ -612,6 +612,62 @@ class _MainWindowState extends ConsumerState<MainWindow> {
       return;
     }
 
+    // Check if project needs initialization before export
+    final projectState = ref.read(projectProvider);
+
+    // Save current timeline and media library in case we need to create a new project
+    final currentTimeline = ref.read(timelineProvider);
+    final currentMediaLibrary = ref.read(mediaLibraryProvider);
+
+    // If no project exists or project has default/empty name, show initialization dialog
+    if (!projectState.hasProject ||
+        projectState.project!.name.isEmpty ||
+        projectState.project!.name.toLowerCase() == 'untitled' ||
+        projectState.project!.name.toLowerCase() == 'new project') {
+      // Show initialization dialog
+      final settings = await showDialog<Map<String, dynamic>>(
+        context: context,
+        builder: (context) => const InitializeProjectDialog(),
+      );
+
+      if (settings == null || !mounted) return;
+
+      // Create or update project with settings
+      if (!projectState.hasProject) {
+        ref.read(projectProvider.notifier).createNewProject(
+          settings['name'],
+          resolution: settings['resolution'],
+          frameRate: settings['frameRate'],
+          maxDuration: settings['maxDuration'],
+        );
+
+        // Restore timeline and media library
+        ref.read(timelineProvider.notifier).loadTimeline(currentTimeline);
+        ref.read(mediaLibraryProvider.notifier).loadItems(currentMediaLibrary);
+      } else {
+        // Update existing project with new settings
+        ref.read(projectProvider.notifier).updateProjectSettings(
+          name: settings['name'],
+          resolution: settings['resolution'],
+          frameRate: settings['frameRate'],
+          maxDuration: settings['maxDuration'],
+        );
+      }
+
+      // Save the project
+      await ref.read(projectProvider.notifier).saveProject();
+
+      if (!mounted) return;
+
+      final error = ref.read(projectProvider).error;
+      if (error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('プロジェクトの保存に失敗しました: $error')),
+        );
+        return;
+      }
+    }
+
     final projectName = ref.read(projectProvider).project?.name ?? 'project';
     final outputPath = await FilePicker.platform.saveFile(
       dialogTitle: 'Export Video',
@@ -627,8 +683,8 @@ class _MainWindowState extends ConsumerState<MainWindow> {
         ? VideoFormat.mov
         : VideoFormat.mp4;
 
-    final projectState = ref.read(projectProvider);
-    final defaultSettings = projectState.project?.defaultExportSettings;
+    final updatedProjectState = ref.read(projectProvider);
+    final defaultSettings = updatedProjectState.project?.defaultExportSettings;
 
     final settings = ExportSettings(
       outputPath: outputPath,

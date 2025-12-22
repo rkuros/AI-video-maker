@@ -100,8 +100,9 @@ class PreviewState {
       videoController: identical(videoController, _unset)
           ? this.videoController
           : videoController as VideoController?,
-      comparePlayer:
-          identical(comparePlayer, _unset) ? this.comparePlayer : comparePlayer as Player?,
+      comparePlayer: identical(comparePlayer, _unset)
+          ? this.comparePlayer
+          : comparePlayer as Player?,
       compareVideoController: identical(compareVideoController, _unset)
           ? this.compareVideoController
           : compareVideoController as VideoController?,
@@ -124,7 +125,8 @@ class PreviewState {
       effectOriginalPath: identical(effectOriginalPath, _unset)
           ? this.effectOriginalPath
           : effectOriginalPath as String?,
-      effectClipSourceStart: effectClipSourceStart ?? this.effectClipSourceStart,
+      effectClipSourceStart:
+          effectClipSourceStart ?? this.effectClipSourceStart,
       effectClipDuration: effectClipDuration ?? this.effectClipDuration,
       timelinePreviewPath: identical(timelinePreviewPath, _unset)
           ? this.timelinePreviewPath
@@ -132,7 +134,8 @@ class PreviewState {
       isTimelineStreaming: isTimelineStreaming ?? this.isTimelineStreaming,
       timelineStreamStartOffset:
           timelineStreamStartOffset ?? this.timelineStreamStartOffset,
-      timelinePreviewPreset: timelinePreviewPreset ?? this.timelinePreviewPreset,
+      timelinePreviewPreset:
+          timelinePreviewPreset ?? this.timelinePreviewPreset,
     );
   }
 }
@@ -181,8 +184,11 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       if (error != null) buffer.write('error: $error\n');
       if (stackTrace != null) buffer.write('$stackTrace\n');
       buffer.write('\n');
-      File(_previewLogPath)
-          .writeAsStringSync(buffer.toString(), mode: FileMode.append, flush: true);
+      File(_previewLogPath).writeAsStringSync(
+        buffer.toString(),
+        mode: FileMode.append,
+        flush: true,
+      );
     } catch (_) {}
   }
 
@@ -212,7 +218,10 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     final videoController = VideoController(player);
     _comparePlayer = player;
     _compareVideoController = videoController;
-    state = state.copyWith(comparePlayer: player, compareVideoController: videoController);
+    state = state.copyWith(
+      comparePlayer: player,
+      compareVideoController: videoController,
+    );
   }
 
   Future<void> _stopEffectPreview() async {
@@ -271,7 +280,9 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
   }) {
     // Cache is only valid while the timeline is unchanged; invalidateTimelinePreview clears it.
     // Include startPosition for seek/restart caching.
-    final startMs = startPosition.inMilliseconds < 0 ? 0 : startPosition.inMilliseconds;
+    final startMs = startPosition.inMilliseconds < 0
+        ? 0
+        : startPosition.inMilliseconds;
     return '${timeline.id}|${preset.name}|$startMs';
   }
 
@@ -408,7 +419,8 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
 
     final isHevc = codec == 'hevc' || codec == 'h265';
     final is10Bit = pixFmt != null && pixFmt.contains('10');
-    final isHdr = transfer == 'arib-std-b67' ||
+    final isHdr =
+        transfer == 'arib-std-b67' ||
         transfer == 'smpte2084' ||
         (primaries != null && primaries.contains('bt2020'));
 
@@ -426,17 +438,17 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     final proxyPath = await _createTempOutputPath(suffix: 'proxy');
     _previewProxyTempPaths.add(proxyPath);
 
-    _log('Generating preview proxy', error: {
-      'input': filePath,
-      'output': proxyPath,
-      'stream': stream,
-    });
+    _log(
+      'Generating preview proxy',
+      error: {'input': filePath, 'output': proxyPath, 'stream': stream},
+    );
 
     // Try to use hardware encoder for faster proxy generation
     final hardwareEncoder = await _detectHardwareEncoder();
     final useHardware = hardwareEncoder != null;
 
     final args = [
+      if (Platform.isMacOS) ...['-hwaccel', 'videotoolbox'],
       '-y',
       '-i',
       filePath,
@@ -471,7 +483,13 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       proxyPath,
     ]);
 
-    final result = await Process.run('ffmpeg', args);
+    var result = await Process.run('ffmpeg', args);
+    if (result.exitCode != 0 && Platform.isMacOS) {
+      result = await Process.run(
+        'ffmpeg',
+        args.where((a) => a != 'videotoolbox' && a != '-hwaccel').toList(),
+      );
+    }
 
     if (result.exitCode != 0) {
       _log(
@@ -497,10 +515,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     _hardwareEncoderChecked = true;
 
     try {
-      final result = await Process.run('ffmpeg', [
-        '-hide_banner',
-        '-encoders',
-      ]);
+      final result = await Process.run('ffmpeg', ['-hide_banner', '-encoders']);
 
       if (result.exitCode != 0) {
         return null;
@@ -685,7 +700,9 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     await _cleanupPreviewProxyTemps();
   }
 
-  Future<void> setTimelinePreviewPreset(enums.PreviewQualityPreset preset) async {
+  Future<void> setTimelinePreviewPreset(
+    enums.PreviewQualityPreset preset,
+  ) async {
     if (preset == state.timelinePreviewPreset) return;
 
     final wasPlaying = state.isPlaying;
@@ -701,7 +718,9 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
 
     // If a timeline stream is active, restart it immediately at the current
     // timeline position so the new resolution/quality takes effect right away.
-    if (wasStreaming && _lastStreamTimeline != null && _lastStreamMediaLibrary != null) {
+    if (wasStreaming &&
+        _lastStreamTimeline != null &&
+        _lastStreamMediaLibrary != null) {
       await loadTimelinePreview(
         _lastStreamTimeline!,
         _lastStreamMediaLibrary!,
@@ -766,10 +785,7 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     }
   }
 
-  Future<void> generateEffectPreview(
-    Clip clip,
-    MediaItem mediaItem,
-  ) async {
+  Future<void> generateEffectPreview(Clip clip, MediaItem mediaItem) async {
     if (clip.effects.isEmpty) return;
     if (mediaItem.filePath.isEmpty) return;
 
@@ -798,14 +814,17 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
         mediaItem.filePath,
         outputPath,
         sourceStart: clip.sourceStart,
-        duration: clip.sourceDuration > Duration.zero ? clip.sourceDuration : clip.duration,
+        duration: clip.sourceDuration > Duration.zero
+            ? clip.sourceDuration
+            : clip.duration,
         effects: clip.effects,
         inTransition: clip.inTransition,
         outTransition: clip.outTransition,
       );
 
-      final clipDuration =
-          clip.sourceDuration > Duration.zero ? clip.sourceDuration : clip.duration;
+      final clipDuration = clip.sourceDuration > Duration.zero
+          ? clip.sourceDuration
+          : clip.duration;
 
       _ensurePlayerInitialized();
       _ensureComparePlayerInitialized();
@@ -833,8 +852,11 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       );
 
       _effectSyncTimer?.cancel();
-      _effectSyncTimer = Timer.periodic(const Duration(milliseconds: 300), (_) async {
-        if (!state.isEffectPreview || _player == null || _comparePlayer == null) return;
+      _effectSyncTimer = Timer.periodic(const Duration(milliseconds: 300), (
+        _,
+      ) async {
+        if (!state.isEffectPreview || _player == null || _comparePlayer == null)
+          return;
         final pos = _player!.state.position;
         final target = state.effectClipSourceStart + pos;
         final beforePos = _comparePlayer!.state.position;
@@ -908,11 +930,14 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       throw Exception('Timeline is empty');
     }
 
-    _log('loadTimelinePreview start', error: {
-      'durationMs': timeline.duration.inMilliseconds,
-      'tracks': timeline.tracks.length,
-      'clips': timeline.tracks.fold<int>(0, (sum, t) => sum + t.clips.length),
-    });
+    _log(
+      'loadTimelinePreview start',
+      error: {
+        'durationMs': timeline.duration.inMilliseconds,
+        'tracks': timeline.tracks.length,
+        'clips': timeline.tracks.fold<int>(0, (sum, t) => sum + t.clips.length),
+      },
+    );
 
     final effectivePreset = preset ?? state.timelinePreviewPreset;
     final start = startPosition ?? timeline.currentPosition;
@@ -961,16 +986,22 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     _lastStreamTimeline = timeline;
     _lastStreamMediaLibrary = List<MediaItem>.from(mediaLibrary);
 
-    final streamSettings = settings ?? _settingsForTimelineStream(preset: effectivePreset);
+    final streamSettings =
+        settings ?? _settingsForTimelineStream(preset: effectivePreset);
 
     final startedAt = DateTime.now();
-    onProgress?.call(const ExportProgress(progress: 0.0, elapsed: Duration.zero));
+    onProgress?.call(
+      const ExportProgress(progress: 0.0, elapsed: Duration.zero),
+    );
 
     try {
-      _log('loadTimelinePreview startTimelineHlsPreview start', error: {
-        'startMs': start.inMilliseconds,
-        'preset': effectivePreset.name,
-      });
+      _log(
+        'loadTimelinePreview startTimelineHlsPreview start',
+        error: {
+          'startMs': start.inMilliseconds,
+          'preset': effectivePreset.name,
+        },
+      );
       final session = await _exportEngine.startTimelineHlsPreview(
         timeline,
         mediaLibrary,
@@ -1012,8 +1043,10 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
           timeout: const Duration(seconds: 55),
           onTick: (elapsed) {
             // Continue to show progress without hitting 100% until ready.
-            final p = (0.9 + (elapsed.inMilliseconds / 55000.0) * 0.09)
-                .clamp(0.9, 0.99);
+            final p = (0.9 + (elapsed.inMilliseconds / 55000.0) * 0.09).clamp(
+              0.9,
+              0.99,
+            );
             onProgress?.call(
               ExportProgress(
                 progress: p,
@@ -1096,7 +1129,8 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
 }
 
 /// Preview provider
-final previewProvider =
-    StateNotifierProvider<PreviewNotifier, PreviewState>((ref) {
+final previewProvider = StateNotifierProvider<PreviewNotifier, PreviewState>((
+  ref,
+) {
   return PreviewNotifier();
 });

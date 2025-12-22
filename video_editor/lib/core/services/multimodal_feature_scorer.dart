@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:video_editor/core/models/highlight.dart';
 import 'visual_feature_extractor.dart';
 import 'audio_feature_extractor.dart';
@@ -9,6 +10,17 @@ class MultimodalFeatureScorer {
   final AudioFeatureExtractor _audioExtractor = AudioFeatureExtractor();
   final TextFeatureExtractor _textExtractor = TextFeatureExtractor();
 
+  List<String> _selectEvenlySpacedFrames(List<String> frames, int targetCount) {
+    if (targetCount <= 0 || frames.isEmpty) return const [];
+    if (frames.length <= targetCount) return frames;
+    final selected = <String>[];
+    for (var i = 0; i < targetCount; i++) {
+      final idx = ((i * frames.length) / targetCount).floor();
+      selected.add(frames[idx]);
+    }
+    return selected;
+  }
+
   /// Extract all features from a video segment
   Future<SegmentFeatures> extractFeatures(
     String videoPath,
@@ -17,81 +29,100 @@ class MultimodalFeatureScorer {
   ) async {
     final segmentDuration = endTime - startTime;
 
-    // Extract visual features
-    final motionSegments = await _visualExtractor.analyzeMotion(
+    // Extract frames once per segment and reuse to avoid re-running FFmpeg.
+    final frames15 = await _visualExtractor.extractFrames(
       videoPath,
       segmentDuration,
       startTime: startTime,
-      samplePoints: 10,
+      maxFrames: 15,
     );
-    final faceSegments = await _visualExtractor.detectFaces(
-      videoPath,
-      segmentDuration,
-      startTime: startTime,
-      samplePoints: 5,
-    );
-    final aestheticSegments = await _visualExtractor.analyzeAesthetics(
-      videoPath,
-      segmentDuration,
-      startTime: startTime,
-      samplePoints: 5,
-    );
-    final sceneChanges = await _visualExtractor.detectSceneChanges(
-      videoPath,
-      segmentDuration,
-      startTime: startTime,
-    );
+    final frames10 = _selectEvenlySpacedFrames(frames15, 10);
+    final frames5 = _selectEvenlySpacedFrames(frames15, 5);
 
-    // Extract audio features
-    final volumeSegments = await _audioExtractor.analyzeVolume(
-      videoPath,
-      segmentDuration,
-      startTime: startTime,
-      samplePoints: 10,
-    );
-    final energySegments = await _audioExtractor.analyzeEnergy(
-      videoPath,
-      segmentDuration,
-      startTime: startTime,
-      samplePoints: 10,
-    );
-    final speechSegments = await _audioExtractor.detectSpeech(
-      videoPath,
-      segmentDuration,
-      startTime: startTime,
-    );
-    final beats = await _audioExtractor.detectBeats(
-      videoPath,
-      startTime: startTime,
-      duration: segmentDuration,
-    );
+    try {
+      final motionSegments = await _visualExtractor.analyzeMotion(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+        samplePoints: 10,
+        frames: frames10,
+      );
+      final faceSegments = await _visualExtractor.detectFaces(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+        samplePoints: 5,
+        frames: frames5,
+      );
+      final aestheticSegments = await _visualExtractor.analyzeAesthetics(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+        samplePoints: 5,
+        frames: frames5,
+      );
+      final sceneChanges = await _visualExtractor.detectSceneChanges(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+      );
 
-    // Extract text features
-    final textSegments = await _textExtractor.extractTextFromVideo(
-      videoPath,
-      segmentDuration,
-      startTime: startTime,
-      samplePoints: 5,
-    );
-    final keywordSegments = await _textExtractor.analyzeKeywords(
-      videoPath,
-      segmentDuration,
-      startTime: startTime,
-    );
+      // Extract audio features
+      final volumeSegments = await _audioExtractor.analyzeVolume(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+        samplePoints: 10,
+      );
+      final energySegments = await _audioExtractor.analyzeEnergy(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+        samplePoints: 10,
+      );
+      final speechSegments = await _audioExtractor.detectSpeech(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+      );
+      final beats = await _audioExtractor.detectBeats(
+        videoPath,
+        startTime: startTime,
+        duration: segmentDuration,
+      );
 
-    return SegmentFeatures(
-      motionIntensity: _averageMotion(motionSegments),
-      sceneChanges: sceneChanges.length,
-      faceCount: _averageFaceCount(faceSegments),
-      hasSmiles: faceSegments.any((f) => f.hasSmile),
-      aestheticScore: _averageAesthetic(aestheticSegments),
-      volumeLevel: _averageVolume(volumeSegments),
-      energyLevel: _averageEnergy(energySegments),
-      hasSpeech: speechSegments.isNotEmpty,
-      beatCount: beats.length,
-      hasText: textSegments.isNotEmpty,
-      keywordScore: _averageKeywordScore(keywordSegments),
-    );
+      // Extract text features
+      final textSegments = await _textExtractor.extractTextFromVideo(
+        videoPath,
+        segmentDuration,
+        startTime: startTime,
+        samplePoints: 15,
+        frames: frames15,
+        cleanupFrames: false,
+      );
+      final keywordSegments = await _textExtractor
+          .analyzeKeywordsFromTextSegments(textSegments);
+
+      return SegmentFeatures(
+        motionIntensity: _averageMotion(motionSegments),
+        sceneChanges: sceneChanges.length,
+        faceCount: _averageFaceCount(faceSegments),
+        hasSmiles: faceSegments.any((f) => f.hasSmile),
+        aestheticScore: _averageAesthetic(aestheticSegments),
+        volumeLevel: _averageVolume(volumeSegments),
+        energyLevel: _averageEnergy(energySegments),
+        hasSpeech: speechSegments.isNotEmpty,
+        beatCount: beats.length,
+        hasText: textSegments.isNotEmpty,
+        keywordScore: _averageKeywordScore(keywordSegments),
+      );
+    } finally {
+      for (final framePath in frames15) {
+        try {
+          await File(framePath).delete();
+        } catch (_) {}
+      }
+    }
   }
 
   /// Calculate comprehensive score for a segment
@@ -121,12 +152,15 @@ class MultimodalFeatureScorer {
 
     // Combine scores with pattern-specific overall weights
     return (visualScore * weights.visualWeight +
-            audioScore * weights.audioWeight +
-            textScore * weights.textWeight);
+        audioScore * weights.audioWeight +
+        textScore * weights.textWeight);
   }
 
   /// Calculate visual component score
-  double _calculateVisualScore(SegmentFeatures features, PatternWeights weights) {
+  double _calculateVisualScore(
+    SegmentFeatures features,
+    PatternWeights weights,
+  ) {
     double score = 0.0;
 
     // Motion
@@ -148,7 +182,10 @@ class MultimodalFeatureScorer {
   }
 
   /// Calculate audio component score
-  double _calculateAudioScore(SegmentFeatures features, PatternWeights weights) {
+  double _calculateAudioScore(
+    SegmentFeatures features,
+    PatternWeights weights,
+  ) {
     double score = 0.0;
 
     // Volume level
@@ -289,33 +326,40 @@ class MultimodalFeatureScorer {
   // Helper methods for averaging features
   double _averageMotion(List<MotionSegment> segments) {
     if (segments.isEmpty) return 0.0;
-    return segments.map((s) => s.motionIntensity).reduce((a, b) => a + b) / segments.length;
+    return segments.map((s) => s.motionIntensity).reduce((a, b) => a + b) /
+        segments.length;
   }
 
   double _averageFaceCount(List<FaceSegment> segments) {
     if (segments.isEmpty) return 0.0;
-    final avgCount = segments.map((s) => s.faceCount).reduce((a, b) => a + b) / segments.length;
+    final avgCount =
+        segments.map((s) => s.faceCount).reduce((a, b) => a + b) /
+        segments.length;
     return (avgCount / 5).clamp(0.0, 1.0); // Normalize assuming max 5 faces
   }
 
   double _averageAesthetic(List<AestheticSegment> segments) {
     if (segments.isEmpty) return 0.5;
-    return segments.map((s) => s.aestheticScore).reduce((a, b) => a + b) / segments.length;
+    return segments.map((s) => s.aestheticScore).reduce((a, b) => a + b) /
+        segments.length;
   }
 
   double _averageVolume(List<VolumeSegment> segments) {
     if (segments.isEmpty) return 0.0;
-    return segments.map((s) => s.meanVolume).reduce((a, b) => a + b) / segments.length;
+    return segments.map((s) => s.meanVolume).reduce((a, b) => a + b) /
+        segments.length;
   }
 
   double _averageEnergy(List<EnergySegment> segments) {
     if (segments.isEmpty) return 0.0;
-    return segments.map((s) => s.energy).reduce((a, b) => a + b) / segments.length;
+    return segments.map((s) => s.energy).reduce((a, b) => a + b) /
+        segments.length;
   }
 
   double _averageKeywordScore(List<KeywordSegment> segments) {
     if (segments.isEmpty) return 0.0;
-    return segments.map((s) => s.relevanceScore).reduce((a, b) => a + b) / segments.length;
+    return segments.map((s) => s.relevanceScore).reduce((a, b) => a + b) /
+        segments.length;
   }
 
   /// Clean up resources

@@ -22,7 +22,9 @@ class VisualFeatureExtractor {
     String? outputDir,
   }) async {
     final tempDir = outputDir ?? Directory.systemTemp.path;
-    final frameDir = Directory('$tempDir/frames_${DateTime.now().millisecondsSinceEpoch}');
+    final frameDir = Directory(
+      '$tempDir/frames_${DateTime.now().millisecondsSinceEpoch}',
+    );
     await frameDir.create(recursive: true);
 
     // Calculate interval to get evenly spaced frames
@@ -30,22 +32,74 @@ class VisualFeatureExtractor {
 
     final framePaths = <String>[];
 
-    // Use FFmpeg to extract frames
-    for (int i = 0; i < maxFrames; i++) {
-      final timestamp = i * intervalSeconds;
-      final absoluteSeconds =
-          startTime.inMilliseconds / 1000.0 + timestamp.toDouble();
-      final outputPath = '${frameDir.path}/frame_${i.toString().padLeft(4, '0')}.jpg';
-
-      final result = await Process.run('ffmpeg', [
-        '-ss', absoluteSeconds.toStringAsFixed(2),
-        '-i', videoPath,
-        '-vframes', '1',
-        '-q:v', '2',
+    // Extract frames in one FFmpeg invocation (much faster than 1-frame-per-run).
+    // Fallback to the old path for degenerate cases.
+    if (maxFrames <= 1 || videoDuration <= Duration.zero) {
+      final absoluteSeconds = startTime.inMilliseconds / 1000.0;
+      final outputPath = '${frameDir.path}/frame_0000.jpg';
+      final args = <String>[
+        ..._videoToolboxDecodeArgs(),
+        '-ss',
+        absoluteSeconds.toStringAsFixed(2),
+        '-i',
+        videoPath,
+        '-vframes',
+        '1',
+        '-q:v',
+        '2',
         outputPath,
-      ]);
-
+      ];
+      var result = await Process.run('ffmpeg', args);
+      if (result.exitCode != 0 && Platform.isMacOS) {
+        result = await Process.run(
+          'ffmpeg',
+          args.where((a) => a != 'videotoolbox' && a != '-hwaccel').toList(),
+        );
+      }
       if (result.exitCode == 0 && File(outputPath).existsSync()) {
+        framePaths.add(outputPath);
+      }
+      return framePaths;
+    }
+
+    final segmentSeconds = videoDuration.inMilliseconds / 1000.0;
+    final fps = max(0.1, maxFrames / max(segmentSeconds, 0.001));
+    final args = <String>[
+      ..._videoToolboxDecodeArgs(),
+      if (startTime > Duration.zero) ...[
+        '-ss',
+        (startTime.inMilliseconds / 1000.0).toStringAsFixed(2),
+      ],
+      if (videoDuration > Duration.zero) ...[
+        '-t',
+        (videoDuration.inMilliseconds / 1000.0).toStringAsFixed(2),
+      ],
+      '-i',
+      videoPath,
+      '-vf',
+      'fps=$fps',
+      '-vsync',
+      'vfr',
+      '-q:v',
+      '2',
+      '-start_number',
+      '0',
+      '-vframes',
+      '$maxFrames',
+      '${frameDir.path}/frame_%04d.jpg',
+    ];
+
+    var result = await Process.run('ffmpeg', args);
+    if (result.exitCode != 0 && Platform.isMacOS) {
+      result = await Process.run(
+        'ffmpeg',
+        args.where((a) => a != 'videotoolbox' && a != '-hwaccel').toList(),
+      );
+    }
+
+    for (int i = 0; i < maxFrames; i++) {
+      final outputPath = '${frameDir.path}/frame_${i.toString().padLeft(4, '0')}.jpg';
+      if (File(outputPath).existsSync()) {
         framePaths.add(outputPath);
       }
     }
@@ -57,13 +111,14 @@ class VisualFeatureExtractor {
   /// Returns timestamps of scene changes with confidence scores
   Future<List<SceneChange>> detectSceneChanges(
     String videoPath,
-    Duration videoDuration,
-    {Duration startTime = Duration.zero}
-  ) async {
+    Duration videoDuration, {
+    Duration startTime = Duration.zero,
+  }) async {
     final sceneChanges = <SceneChange>[];
 
     // Use FFmpeg's scene detection
-    final result = await Process.run('ffmpeg', [
+    final args = <String>[
+      ..._videoToolboxDecodeArgs(),
       if (startTime > Duration.zero) ...[
         '-ss',
         (startTime.inMilliseconds / 1000.0).toStringAsFixed(2),
@@ -72,11 +127,22 @@ class VisualFeatureExtractor {
         '-t',
         (videoDuration.inMilliseconds / 1000.0).toStringAsFixed(2),
       ],
-      '-i', videoPath,
-      '-vf', 'select=gt(scene\\,0.3),showinfo',
-      '-f', 'null',
+      '-i',
+      videoPath,
+      '-vf',
+      'select=gt(scene\\,0.3),showinfo',
+      '-f',
+      'null',
       '-',
-    ], runInShell: true);
+    ];
+    var result = await Process.run('ffmpeg', args, runInShell: true);
+    if (result.exitCode != 0 && Platform.isMacOS) {
+      result = await Process.run(
+        'ffmpeg',
+        args.where((a) => a != 'videotoolbox' && a != '-hwaccel').toList(),
+        runInShell: true,
+      );
+    }
 
     // Parse FFmpeg output for scene changes
     final lines = result.stderr.toString().split('\n');
@@ -85,15 +151,22 @@ class VisualFeatureExtractor {
         final match = RegExp(r'pts_time:([\d.]+)').firstMatch(line);
         if (match != null) {
           final timestamp = double.parse(match.group(1)!);
-          sceneChanges.add(SceneChange(
-            timestamp: Duration(milliseconds: (timestamp * 1000).round()),
-            confidence: 0.8, // Default confidence from FFmpeg threshold
-          ));
+          sceneChanges.add(
+            SceneChange(
+              timestamp: Duration(milliseconds: (timestamp * 1000).round()),
+              confidence: 0.8, // Default confidence from FFmpeg threshold
+            ),
+          );
         }
       }
     }
 
     return sceneChanges;
+  }
+
+  List<String> _videoToolboxDecodeArgs() {
+    if (!Platform.isMacOS) return const [];
+    return const ['-hwaccel', 'videotoolbox'];
   }
 
   /// Calculate motion intensity from consecutive frames
@@ -102,47 +175,60 @@ class VisualFeatureExtractor {
     Duration videoDuration, {
     Duration startTime = Duration.zero,
     int samplePoints = 20,
+    List<String>? frames,
+    bool cleanupFrames = true,
   }) async {
     final motionSegments = <MotionSegment>[];
 
     // Extract frames for motion analysis
-    final frames = await extractFrames(
-      videoPath,
-      videoDuration,
-      startTime: startTime,
-      maxFrames: samplePoints,
-    );
+    final framePaths =
+        frames ??
+        await extractFrames(
+          videoPath,
+          videoDuration,
+          startTime: startTime,
+          maxFrames: samplePoints,
+        );
 
-    if (frames.length < 2) {
+    if (framePaths.length < 2) {
       return motionSegments;
     }
 
     // Analyze motion between consecutive frames
-    for (int i = 0; i < frames.length - 1; i++) {
-      final frame1 = await _loadImage(frames[i]);
-      final frame2 = await _loadImage(frames[i + 1]);
+    for (int i = 0; i < framePaths.length - 1; i++) {
+      final frame1 = await _loadImage(framePaths[i]);
+      final frame2 = await _loadImage(framePaths[i + 1]);
 
       if (frame1 != null && frame2 != null) {
         final motionScore = _calculateFrameDifference(frame1, frame2);
         final timestamp = Duration(
-          milliseconds: (videoDuration.inMilliseconds * i / frames.length).round(),
+          milliseconds: (videoDuration.inMilliseconds * i / framePaths.length)
+              .round(),
         );
 
-        motionSegments.add(MotionSegment(
-          startTime: timestamp,
-          endTime: timestamp + Duration(
-            milliseconds: (videoDuration.inMilliseconds / frames.length).round(),
+        motionSegments.add(
+          MotionSegment(
+            startTime: timestamp,
+            endTime:
+                timestamp +
+                Duration(
+                  milliseconds:
+                      (videoDuration.inMilliseconds / framePaths.length)
+                          .round(),
+                ),
+            motionIntensity: motionScore,
           ),
-          motionIntensity: motionScore,
-        ));
+        );
       }
     }
 
     // Clean up extracted frames
-    for (final framePath in frames) {
-      try {
-        await File(framePath).delete();
-      } catch (_) {}
+    if (cleanupFrames && frames == null) {
+      for (final framePath in framePaths) {
+        try {
+          await File(framePath).delete();
+        } catch (_) {}
+      }
     }
 
     return motionSegments;
@@ -154,19 +240,23 @@ class VisualFeatureExtractor {
     Duration videoDuration, {
     Duration startTime = Duration.zero,
     int samplePoints = 15,
+    List<String>? frames,
+    bool cleanupFrames = true,
   }) async {
     final faceSegments = <FaceSegment>[];
 
     // Extract frames for face detection
-    final frames = await extractFrames(
-      videoPath,
-      videoDuration,
-      startTime: startTime,
-      maxFrames: samplePoints,
-    );
+    final framePaths =
+        frames ??
+        await extractFrames(
+          videoPath,
+          videoDuration,
+          startTime: startTime,
+          maxFrames: samplePoints,
+        );
 
-    for (int i = 0; i < frames.length; i++) {
-      final framePath = frames[i];
+    for (int i = 0; i < framePaths.length; i++) {
+      final framePath = framePaths[i];
       final inputImage = InputImage.fromFilePath(framePath);
 
       try {
@@ -174,15 +264,22 @@ class VisualFeatureExtractor {
 
         if (faces.isNotEmpty) {
           final timestamp = Duration(
-            milliseconds: (videoDuration.inMilliseconds * i / frames.length).round(),
+            milliseconds: (videoDuration.inMilliseconds * i / framePaths.length)
+                .round(),
           );
 
-          faceSegments.add(FaceSegment(
-            timestamp: timestamp,
-            faceCount: faces.length,
-            confidence: faces.map((f) => f.smilingProbability ?? 0.5).reduce((a, b) => a + b) / faces.length,
-            hasSmile: faces.any((f) => (f.smilingProbability ?? 0) > 0.7),
-          ));
+          faceSegments.add(
+            FaceSegment(
+              timestamp: timestamp,
+              faceCount: faces.length,
+              confidence:
+                  faces
+                      .map((f) => f.smilingProbability ?? 0.5)
+                      .reduce((a, b) => a + b) /
+                  faces.length,
+              hasSmile: faces.any((f) => (f.smilingProbability ?? 0) > 0.7),
+            ),
+          );
         }
       } catch (e) {
         print('Error detecting faces in frame $i: $e');
@@ -190,10 +287,12 @@ class VisualFeatureExtractor {
     }
 
     // Clean up extracted frames
-    for (final framePath in frames) {
-      try {
-        await File(framePath).delete();
-      } catch (_) {}
+    if (cleanupFrames && frames == null) {
+      for (final framePath in framePaths) {
+        try {
+          await File(framePath).delete();
+        } catch (_) {}
+      }
     }
 
     return faceSegments;
@@ -205,38 +304,47 @@ class VisualFeatureExtractor {
     Duration videoDuration, {
     Duration startTime = Duration.zero,
     int samplePoints = 20,
+    List<String>? frames,
+    bool cleanupFrames = true,
   }) async {
     final aestheticSegments = <AestheticSegment>[];
 
-    final frames = await extractFrames(
-      videoPath,
-      videoDuration,
-      startTime: startTime,
-      maxFrames: samplePoints,
-    );
+    final framePaths =
+        frames ??
+        await extractFrames(
+          videoPath,
+          videoDuration,
+          startTime: startTime,
+          maxFrames: samplePoints,
+        );
 
-    for (int i = 0; i < frames.length; i++) {
-      final image = await _loadImage(frames[i]);
+    for (int i = 0; i < framePaths.length; i++) {
+      final image = await _loadImage(framePaths[i]);
 
       if (image != null) {
         final timestamp = Duration(
-          milliseconds: (videoDuration.inMilliseconds * i / frames.length).round(),
+          milliseconds: (videoDuration.inMilliseconds * i / framePaths.length)
+              .round(),
         );
 
-        aestheticSegments.add(AestheticSegment(
-          timestamp: timestamp,
-          brightness: _calculateBrightness(image),
-          contrast: _calculateContrast(image),
-          colorfulness: _calculateColorfulness(image),
-        ));
+        aestheticSegments.add(
+          AestheticSegment(
+            timestamp: timestamp,
+            brightness: _calculateBrightness(image),
+            contrast: _calculateContrast(image),
+            colorfulness: _calculateColorfulness(image),
+          ),
+        );
       }
     }
 
     // Clean up extracted frames
-    for (final framePath in frames) {
-      try {
-        await File(framePath).delete();
-      } catch (_) {}
+    if (cleanupFrames && frames == null) {
+      for (final framePath in framePaths) {
+        try {
+          await File(framePath).delete();
+        } catch (_) {}
+      }
     }
 
     return aestheticSegments;
@@ -274,9 +382,7 @@ class VisualFeatureExtractor {
         final g2 = pixel2.g.toInt();
         final b2 = pixel2.b.toInt();
 
-        final diff = sqrt(
-          pow(r2 - r1, 2) + pow(g2 - g1, 2) + pow(b2 - b1, 2),
-        );
+        final diff = sqrt(pow(r2 - r1, 2) + pow(g2 - g1, 2) + pow(b2 - b1, 2));
 
         totalDiff += diff;
         pixelCount++;
@@ -328,9 +434,9 @@ class VisualFeatureExtractor {
 
     // Calculate standard deviation as contrast measure
     final mean = brightnesses.reduce((a, b) => a + b) / brightnesses.length;
-    final variance = brightnesses
-        .map((b) => pow(b - mean, 2))
-        .reduce((a, b) => a + b) / brightnesses.length;
+    final variance =
+        brightnesses.map((b) => pow(b - mean, 2)).reduce((a, b) => a + b) /
+        brightnesses.length;
 
     return sqrt(variance);
   }
@@ -371,10 +477,7 @@ class SceneChange {
   final Duration timestamp;
   final double confidence;
 
-  const SceneChange({
-    required this.timestamp,
-    required this.confidence,
-  });
+  const SceneChange({required this.timestamp, required this.confidence});
 }
 
 /// Motion analysis result
@@ -421,7 +524,8 @@ class AestheticSegment {
 
   double get aestheticScore {
     // Prefer well-lit, high-contrast, colorful frames
-    final brightnessScore = 1.0 - (brightness - 0.5).abs() * 2; // Prefer middle brightness
+    final brightnessScore =
+        1.0 - (brightness - 0.5).abs() * 2; // Prefer middle brightness
     final contrastScore = contrast; // Higher contrast is better
     final colorScore = colorfulness; // More colorful is better
 
