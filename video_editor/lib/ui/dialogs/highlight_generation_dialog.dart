@@ -2,12 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:video_editor/core/models/models.dart';
 import 'package:video_editor/core/services/highlight_generator_service.dart';
 
+enum HighlightDestination {
+  newGroup,     // Create new group
+  replaceActive, // Replace current group's timeline
+}
+
 class HighlightGenerationRequest {
   final HighlightGenerationMode mode;
   final Duration targetDuration;
   final HighlightPattern pattern;
   final HighlightPreferences preferences;
   final MediaItem? bgm;
+  final HighlightDestination destination;
+  final String? newGroupName;
 
   const HighlightGenerationRequest({
     required this.mode,
@@ -15,16 +22,15 @@ class HighlightGenerationRequest {
     required this.pattern,
     required this.preferences,
     required this.bgm,
+    required this.destination,
+    this.newGroupName,
   });
 }
 
 class HighlightGenerationDialog extends StatefulWidget {
   final List<MediaItem> mediaLibrary;
 
-  const HighlightGenerationDialog({
-    super.key,
-    required this.mediaLibrary,
-  });
+  const HighlightGenerationDialog({super.key, required this.mediaLibrary});
 
   @override
   State<HighlightGenerationDialog> createState() =>
@@ -40,6 +46,11 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
   bool _preferHighMotion = true;
   bool _preferFaces = true;
   bool _preferSpeechPeaks = true;
+  bool _oneSegmentPerClip = false;
+  bool _requireAllClips = false;
+
+  HighlightDestination _destination = HighlightDestination.newGroup;
+  String _newGroupName = '';
 
   List<MediaItem> get _audioItems =>
       widget.mediaLibrary.where((m) => m.type == MediaType.audio).toList();
@@ -63,6 +74,8 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
             _buildPreferences(),
             const SizedBox(height: 12),
             _buildBgm(),
+            const SizedBox(height: 12),
+            _buildDestination(),
           ],
         ),
       ),
@@ -82,10 +95,16 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
                       preferHighMotion: _preferHighMotion,
                       preferFaces: _preferFaces,
                       preferSpeechPeaks: _preferSpeechPeaks,
+                      oneSegmentPerClip: _oneSegmentPerClip,
+                      requireAllClips: _requireAllClips,
                       minGapSeconds: _pattern.minGapSeconds,
                       diversityWeight: _pattern.diversityWeight,
                     ),
                     bgm: _mode == HighlightGenerationMode.beat ? _bgm : null,
+                    destination: _destination,
+                    newGroupName: _destination == HighlightDestination.newGroup
+                        ? (_newGroupName.trim().isEmpty ? 'ハイライト ${_pattern.name}' : _newGroupName.trim())
+                        : null,
                   );
                   Navigator.pop(context, request);
                 }
@@ -130,8 +149,10 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
           _mode = value;
           if (_mode != HighlightGenerationMode.beat) {
             _bgm = null;
-          } else if (_bgm == null && _audioItems.isNotEmpty) {
-            _bgm = _audioItems.first;
+          } else {
+            if (_bgm == null && _audioItems.isNotEmpty) {
+              _bgm = _audioItems.first;
+            }
           }
         });
       },
@@ -146,18 +167,9 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
         border: OutlineInputBorder(),
       ),
       items: const [
-        DropdownMenuItem(
-          value: Duration(seconds: 30),
-          child: Text('30秒'),
-        ),
-        DropdownMenuItem(
-          value: Duration(seconds: 60),
-          child: Text('60秒'),
-        ),
-        DropdownMenuItem(
-          value: Duration(seconds: 90),
-          child: Text('90秒'),
-        ),
+        DropdownMenuItem(value: Duration(seconds: 30), child: Text('30秒')),
+        DropdownMenuItem(value: Duration(seconds: 60), child: Text('60秒')),
+        DropdownMenuItem(value: Duration(seconds: 90), child: Text('90秒')),
       ],
       onChanged: (value) {
         if (value == null) return;
@@ -174,12 +186,7 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
         border: OutlineInputBorder(),
       ),
       items: HighlightPattern.allPatterns
-          .map(
-            (p) => DropdownMenuItem(
-              value: p,
-              child: Text(p.name),
-            ),
-          )
+          .map((p) => DropdownMenuItem(value: p, child: Text(p.name)))
           .toList(),
       onChanged: (value) {
         if (value == null) return;
@@ -192,10 +199,7 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const Text(
-          '嗜好（重視ポイント）',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
+        const Text('嗜好（重視ポイント）', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
@@ -215,6 +219,18 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
           value: _preferSpeechPeaks,
           onChanged: (v) => setState(() => _preferSpeechPeaks = v),
         ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('1動画（素材）につき1セグメント'),
+          value: _oneSegmentPerClip,
+          onChanged: (v) => setState(() => _oneSegmentPerClip = v),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('全動画（素材）を最低1回使う'),
+          value: _requireAllClips,
+          onChanged: (v) => setState(() => _requireAllClips = v),
+        ),
       ],
     );
   }
@@ -229,19 +245,53 @@ class _HighlightGenerationDialogState extends State<HighlightGenerationDialog> {
         helperText: enabled ? null : 'Beat-based のときのみ使用',
       ),
       items: [
-        const DropdownMenuItem<MediaItem?>(
-          value: null,
-          child: Text('なし'),
-        ),
+        const DropdownMenuItem<MediaItem?>(value: null, child: Text('なし')),
         ..._audioItems.map(
-          (a) => DropdownMenuItem<MediaItem?>(
-            value: a,
-            child: Text(a.name),
-          ),
+          (a) => DropdownMenuItem<MediaItem?>(value: a, child: Text(a.name)),
         ),
       ],
       onChanged: enabled ? (value) => setState(() => _bgm = value) : null,
     );
   }
-}
 
+  Widget _buildDestination() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        DropdownButtonFormField<HighlightDestination>(
+          value: _destination,
+          decoration: const InputDecoration(
+            labelText: '出力先',
+            border: OutlineInputBorder(),
+          ),
+          items: const [
+            DropdownMenuItem(
+              value: HighlightDestination.newGroup,
+              child: Text('新しいグループを作成'),
+            ),
+            DropdownMenuItem(
+              value: HighlightDestination.replaceActive,
+              child: Text('現在のグループを置き換え'),
+            ),
+          ],
+          onChanged: (value) {
+            if (value != null) {
+              setState(() => _destination = value);
+            }
+          },
+        ),
+        if (_destination == HighlightDestination.newGroup) ...[
+          const SizedBox(height: 12),
+          TextField(
+            decoration: InputDecoration(
+              labelText: 'グループ名（空欄の場合は自動命名）',
+              border: const OutlineInputBorder(),
+              hintText: 'ハイライト ${_pattern.name}',
+            ),
+            onChanged: (value) => _newGroupName = value,
+          ),
+        ],
+      ],
+    );
+  }
+}

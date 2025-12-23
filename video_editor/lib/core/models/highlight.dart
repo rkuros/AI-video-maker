@@ -103,6 +103,8 @@ class HighlightPreferences {
   final bool preferHighMotion;
   final bool preferFaces;
   final bool preferSpeechPeaks;
+  final bool oneSegmentPerClip;
+  final bool requireAllClips;
 
   const HighlightPreferences({
     this.modalityWeights = const {'visual': 0.4, 'audio': 0.4, 'text': 0.2},
@@ -111,6 +113,8 @@ class HighlightPreferences {
     this.preferHighMotion = true,
     this.preferFaces = true,
     this.preferSpeechPeaks = true,
+    this.oneSegmentPerClip = false,
+    this.requireAllClips = false,
   });
 
   factory HighlightPreferences.fromJson(Map<String, dynamic> json) =>
@@ -125,6 +129,8 @@ class HighlightPreferences {
     bool? preferHighMotion,
     bool? preferFaces,
     bool? preferSpeechPeaks,
+    bool? oneSegmentPerClip,
+    bool? requireAllClips,
   }) {
     return HighlightPreferences(
       modalityWeights: modalityWeights ?? Map.from(this.modalityWeights),
@@ -133,6 +139,8 @@ class HighlightPreferences {
       preferHighMotion: preferHighMotion ?? this.preferHighMotion,
       preferFaces: preferFaces ?? this.preferFaces,
       preferSpeechPeaks: preferSpeechPeaks ?? this.preferSpeechPeaks,
+      oneSegmentPerClip: oneSegmentPerClip ?? this.oneSegmentPerClip,
+      requireAllClips: requireAllClips ?? this.requireAllClips,
     );
   }
 }
@@ -150,9 +158,9 @@ class UserPreferenceProfile {
     Map<String, double>? learnedWeights,
     List<String>? rejectedTags,
     List<String>? preferredTags,
-  })  : learnedWeights = learnedWeights ?? {},
-        rejectedTags = rejectedTags ?? [],
-        preferredTags = preferredTags ?? [];
+  }) : learnedWeights = learnedWeights ?? {},
+       rejectedTags = rejectedTags ?? [],
+       preferredTags = preferredTags ?? [];
 
   factory UserPreferenceProfile.fromJson(Map<String, dynamic> json) =>
       _$UserPreferenceProfileFromJson(json);
@@ -173,8 +181,8 @@ class HighlightSegment {
     required this.start,
     required this.end,
     Map<String, dynamic>? metadata,
-  })  : id = id ?? _uuid.v4(),
-        metadata = metadata ?? {};
+  }) : id = id ?? _uuid.v4(),
+       metadata = metadata ?? {};
 
   factory HighlightSegment.fromJson(Map<String, dynamic> json) =>
       _$HighlightSegmentFromJson(json);
@@ -214,9 +222,9 @@ class HighlightFeatures {
     Map<String, List<double>>? visualFeatures,
     Map<String, List<double>>? audioFeatures,
     Map<String, List<double>>? textFeatures,
-  })  : visualFeatures = visualFeatures ?? {},
-        audioFeatures = audioFeatures ?? {},
-        textFeatures = textFeatures ?? {};
+  }) : visualFeatures = visualFeatures ?? {},
+       audioFeatures = audioFeatures ?? {},
+       textFeatures = textFeatures ?? {};
 
   factory HighlightFeatures.fromJson(Map<String, dynamic> json) =>
       _$HighlightFeaturesFromJson(json);

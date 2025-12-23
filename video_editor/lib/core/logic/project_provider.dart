@@ -5,6 +5,7 @@ import 'package:video_editor/core/models/models.dart';
 import 'package:video_editor/core/services/project_service.dart';
 import 'package:video_editor/core/logic/timeline_provider.dart';
 import 'package:video_editor/core/logic/media_library_provider.dart';
+import 'package:video_editor/core/logic/preview_provider.dart';
 
 /// Provider for project service
 final projectServiceProvider = Provider<ProjectService>((ref) {
@@ -64,6 +65,9 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     int frameRate = 30,
     Duration? maxDuration,
   }) {
+    // Clear preview caches when switching projects.
+    unawaited(ref.read(previewProvider.notifier).clearTimelinePreviewCache());
+
     final project = Project(
       name: name,
       defaultExportSettings: ExportSettings(
@@ -77,10 +81,7 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     ref.read(timelineProvider.notifier).clear();
     ref.read(mediaLibraryProvider.notifier).clear();
 
-    state = ProjectState(
-      project: project,
-      isModified: false,
-    );
+    state = ProjectState(project: project, isModified: false);
   }
 
   /// Save the current project
@@ -93,14 +94,18 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
       final service = ref.read(projectServiceProvider);
 
       // Get current state from providers
-      final timeline = ref.read(timelineProvider);
+      final timelineGroups = ref.read(timelineProvider.notifier).getGroups();
+      final activeGroupId = ref.read(timelineProvider.notifier).activeGroupId;
       final mediaLibrary = ref.read(mediaLibraryProvider);
 
       // Update project with current state
-      final updatedProject = state.project!.copyWith(
-        timeline: timeline,
-        mediaLibrary: mediaLibrary,
-      ).touch();
+      final updatedProject = state.project!
+          .copyWith(
+            timelineGroups: timelineGroups,
+            activeTimelineGroupId: activeGroupId,
+            mediaLibrary: mediaLibrary,
+          )
+          .touch();
 
       // Determine file path
       String filePath;
@@ -134,11 +139,17 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     state = state.copyWith(clearError: true);
 
     try {
+      // Clear preview caches when switching projects.
+      await ref.read(previewProvider.notifier).clearTimelinePreviewCache();
+
       final service = ref.read(projectServiceProvider);
       final project = await service.loadProject(filePath);
 
-      // Load timeline
-      ref.read(timelineProvider.notifier).loadTimeline(project.timeline);
+      // Load timeline groups
+      ref.read(timelineProvider.notifier).loadGroups(
+        project.timelineGroups,
+        activeGroupId: project.activeTimelineGroupId,
+      );
 
       // Load media library
       ref.read(mediaLibraryProvider.notifier).loadItems(project.mediaLibrary);
@@ -165,9 +176,7 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
         error: warning,
       );
     } catch (e) {
-      state = state.copyWith(
-        error: 'Failed to load project: $e',
-      );
+      state = state.copyWith(error: 'Failed to load project: $e');
     }
   }
 
@@ -183,6 +192,8 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     String? name,
     Resolution? resolution,
     int? frameRate,
+    bool? audioNormalizeEnabled,
+    String? audioNormalizeFilter,
     Duration? maxDuration,
     bool clearMaxDuration = false,
   }) {
@@ -192,24 +203,28 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
     final updatedSettings = currentSettings.copyWith(
       resolution: resolution,
       frameRate: frameRate,
+      audioNormalizeEnabled: audioNormalizeEnabled,
+      audioNormalizeFilter: audioNormalizeFilter,
     );
 
-    final updatedProject = state.project!.copyWith(
-      name: name,
-      defaultExportSettings: updatedSettings,
-      maxDuration: maxDuration,
-      clearMaxDuration: clearMaxDuration,
-    ).touch();
+    final updatedProject = state.project!
+        .copyWith(
+          name: name,
+          defaultExportSettings: updatedSettings,
+          maxDuration: maxDuration,
+          clearMaxDuration: clearMaxDuration,
+        )
+        .touch();
 
-    state = state.copyWith(
-      project: updatedProject,
-      isModified: true,
-    );
+    state = state.copyWith(project: updatedProject, isModified: true);
   }
 
   /// Close current project
   void closeProject() {
     _stopAutoSave();
+
+    // Clear preview caches when closing project.
+    unawaited(ref.read(previewProvider.notifier).clearTimelinePreviewCache());
 
     // Clear timeline and media library
     ref.read(timelineProvider.notifier).clear();
@@ -248,8 +263,9 @@ class ProjectNotifier extends StateNotifier<ProjectState> {
 }
 
 /// Provider for project state
-final projectProvider =
-    StateNotifierProvider<ProjectNotifier, ProjectState>((ref) {
+final projectProvider = StateNotifierProvider<ProjectNotifier, ProjectState>((
+  ref,
+) {
   return ProjectNotifier(ref);
 });
 

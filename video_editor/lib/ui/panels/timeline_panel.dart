@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -13,7 +15,6 @@ import 'package:video_editor/core/services/auto_editor_service.dart';
 import 'package:video_editor/core/services/beat_analyzer_service.dart';
 import 'package:video_editor/core/services/highlight_generator_service.dart';
 import 'package:video_editor/core/engines/ffmpeg_video_engine.dart';
-import 'package:video_editor/ui/dialogs/highlight_editor_dialog.dart';
 import 'package:video_editor/ui/dialogs/highlight_generation_dialog.dart';
 import 'package:video_editor/ui/dialogs/preview_loading_dialog.dart';
 
@@ -53,12 +54,291 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onHorizontalScroll);
   }
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onHorizontalScroll);
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onHorizontalScroll() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  Future<void> _generateAudioWithSuno() async {
+    final description = await _promptSongDescription();
+    if (description == null || description.trim().isEmpty) return;
+
+    final cliPath = Platform.environment['SUNO_CLI_PATH'] ??
+        '/Users/miyanorococo/Repository/video-maker/video_editor/tools/suno/suno_cli.py';
+    final cdpUrl =
+        Platform.environment['SUNO_CDP_URL'] ?? 'http://127.0.0.1:9222';
+    final pythonExe = Platform.environment['SUNO_PYTHON'] ?? 'python3';
+
+    if (!File(cliPath).existsSync()) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Suno CLI not found: $cliPath')),
+      );
+      return;
+    }
+
+    final setupOk = await _ensureSunoSetup(cdpUrl);
+    if (!setupOk) return;
+
+    if (!mounted) return;
+    final generatingNotifier = ref.read(sunoGeneratingProvider.notifier);
+    final initialLabel = 'Generating: ${_truncateLabel(description.trim())}';
+    generatingNotifier.state = [initialLabel];
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Generating audio in background...')),
+    );
+
+    unawaited(
+      _runSunoProcess(
+        pythonExe: pythonExe,
+        cliPath: cliPath,
+        cdpUrl: cdpUrl,
+        description: description.trim(),
+        generatingNotifier: generatingNotifier,
+      ),
+    );
+  }
+
+  Future<void> _runSunoProcess({
+    required String pythonExe,
+    required String cliPath,
+    required String cdpUrl,
+    required String description,
+    required StateController<List<String>> generatingNotifier,
+  }) async {
+    final process = await Process.start(
+      pythonExe,
+      [
+        cliPath,
+        '--connect-cdp',
+        cdpUrl,
+        '--song-desc',
+        description,
+        '--count',
+        '2',
+      ],
+      runInShell: false,
+    );
+
+    final stdoutLines = <String>[];
+    final stderrLines = <String>[];
+    process.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
+      stdoutLines.add(line);
+      if (line.startsWith('UI shows new clip(s):')) {
+        final raw = line.replaceFirst('UI shows new clip(s):', '').trim();
+        final ids = raw.isEmpty
+            ? <String>[]
+            : raw
+                .split(',')
+                .map((id) => id.trim())
+                .where((id) => id.isNotEmpty)
+                .toList();
+        if (ids.isNotEmpty) {
+          generatingNotifier.state =
+              ids.map((id) => 'Generating clip $id').toList();
+        }
+      }
+    });
+    process.stderr
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(stderrLines.add);
+
+    final exitCode = await process.exitCode;
+    if (!mounted) return;
+
+    if (exitCode != 0) {
+      generatingNotifier.state = [];
+      final tail = stderrLines.isNotEmpty
+          ? stderrLines.last
+          : 'Suno CLI exited with code $exitCode';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(tail)),
+      );
+      return;
+    }
+
+    final mp3Paths = stdoutLines.where((line) => line.endsWith('.mp3')).toList();
+    if (mp3Paths.isEmpty) {
+      generatingNotifier.state = [];
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No MP3 files reported by Suno CLI.')),
+      );
+      return;
+    }
+
+    final mediaNotifier = ref.read(mediaLibraryProvider.notifier);
+    for (final filePath in mp3Paths) {
+      await mediaNotifier.importFile(filePath);
+    }
+
+    generatingNotifier.state = [];
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Added ${mp3Paths.length} audio item(s).')),
+    );
+  }
+
+  Future<bool> _ensureSunoSetup(String cdpUrl) async {
+    if (await _isCdpAvailable(cdpUrl)) {
+      return true;
+    }
+
+    final launched = await _showSetupDialog();
+    if (!launched) return false;
+
+    await _openSunoCreatePage();
+    final ready = await _showLoginDialog();
+    if (!ready) return false;
+
+    return _isCdpAvailable(cdpUrl);
+  }
+
+  Future<bool> _isCdpAvailable(String cdpUrl) async {
+    final uri = Uri.tryParse(cdpUrl);
+    if (uri == null || uri.host.isEmpty) return false;
+    final port = uri.port == 0 ? 9222 : uri.port;
+    try {
+      final socket = await Socket.connect(uri.host, port,
+          timeout: const Duration(seconds: 1));
+      socket.destroy();
+      return true;
+    } on SocketException {
+      return false;
+    } on TimeoutException {
+      return false;
+    }
+  }
+
+  Future<bool> _showSetupDialog() async {
+    return (await showDialog<bool>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('Suno setup required'),
+              content: const Text(
+                'Chrome must run with --remote-debugging-port=9222 and you must be logged in to Suno.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    await _launchChromeRemoteDebugging();
+                    if (!context.mounted) return;
+                    Navigator.of(context).pop(true);
+                  },
+                  child: const Text('Launch Chrome'),
+                ),
+              ],
+            );
+          },
+        )) ??
+        false;
+  }
+
+  Future<bool> _showLoginDialog() async {
+    return (await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('Finish login'),
+              content: const Text(
+                'Complete login and any CAPTCHA in the Chrome window, then click Continue.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Continue'),
+                ),
+              ],
+            );
+          },
+        )) ??
+        false;
+  }
+
+  Future<void> _launchChromeRemoteDebugging() async {
+    if (!Platform.isMacOS) return;
+    final home = Platform.environment['HOME'] ?? '';
+    final chromePath =
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    await Process.start(
+      chromePath,
+      [
+        '--remote-debugging-port=9222',
+        '--user-data-dir=$home/.suno-chrome-profile',
+        '--profile-directory=Default',
+        'https://suno.com/create',
+      ],
+      runInShell: false,
+    );
+  }
+
+  Future<void> _openSunoCreatePage() async {
+    if (!Platform.isMacOS) return;
+    await Process.start(
+      'open',
+      ['-a', 'Google Chrome', 'https://suno.com/create'],
+      runInShell: false,
+    );
+  }
+
+  Future<String?> _promptSongDescription() async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Generate Audio'),
+          content: TextField(
+            controller: controller,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: 'Song Description',
+              hintText: 'Describe the song you want to create',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(controller.text),
+              child: const Text('Generate'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    return result;
+  }
+
+  String _truncateLabel(String value) {
+    const maxLen = 40;
+    if (value.length <= maxLen) return value;
+    return value.substring(0, maxLen - 3) + '...';
   }
 
   @override
@@ -70,7 +350,10 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     // Use preview position when playing, otherwise use timeline position
     final previewState = ref.watch(previewProvider);
     final currentPosition = previewState.isPlaying
-        ? previewState.currentPosition
+        ? (previewState.isTimelineStreaming
+              ? previewState.timelineStreamStartOffset +
+                    previewState.currentPosition
+              : previewState.currentPosition)
         : timeline.currentPosition;
 
     return Container(
@@ -95,161 +378,213 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   Widget _buildToolbar(Timeline timeline) {
     final timelineNotifier = ref.read(timelineProvider.notifier);
     final previewState = ref.watch(previewProvider);
+    final groups = ref.watch(timelineGroupsProvider);
+    final activeGroup = ref.watch(activeTimelineGroupProvider);
 
     return Container(
       padding: const EdgeInsets.all(8.0),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(
-        children: [
-          const Text(
-            'Timeline',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
+          children: [
+            const Text(
+              'Timeline',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
-          ),
-          const SizedBox(width: 16),
-          // Add track buttons
-          IconButton(
-            icon: const Icon(Icons.video_library),
-            onPressed: () {
-              timelineNotifier.addTrack(TrackType.video, name: 'Video Track');
-            },
-            tooltip: 'Add Video Track',
-            iconSize: 20,
-          ),
-          IconButton(
-            icon: const Icon(Icons.audiotrack),
-            onPressed: () {
-              timelineNotifier.addTrack(TrackType.audio, name: 'Audio Track');
-            },
-            tooltip: 'Add Audio Track',
-            iconSize: 20,
-          ),
-          const VerticalDivider(),
-          // Playback controls
-          IconButton(
-            icon: Icon(
-              previewState.isPlaying ? Icons.pause : Icons.play_arrow,
-            ),
-            onPressed: _togglePlayback,
-            tooltip: previewState.isPlaying ? 'Pause' : 'Play',
-          ),
-          IconButton(
-            icon: const Icon(Icons.stop),
-            onPressed: _stopPlayback,
-            tooltip: 'Stop',
-          ),
-          const SizedBox(width: 8),
-          // Preview quality preset
-          PopupMenuButton<PreviewQualityPreset>(
-            tooltip: 'Preview Quality',
-            initialValue: previewState.timelinePreviewPreset,
-            onSelected: (preset) {
-              ref.read(previewProvider.notifier).setTimelinePreviewPreset(preset);
-            },
-            itemBuilder: (context) => PreviewQualityPreset.values
-                .map(
-                  (preset) => PopupMenuItem(
-                    value: preset,
-                    child: Row(
-                      children: [
-                        if (preset == previewState.timelinePreviewPreset)
-                          const Icon(Icons.check, size: 16)
-                        else
-                          const SizedBox(width: 16),
-                        const SizedBox(width: 8),
-                        Text(preset.label),
-                      ],
-                    ),
-                  ),
-                )
-                .toList(),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.grey[800],
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.high_quality, size: 18),
-                  const SizedBox(width: 6),
-                  Text(
-                    previewState.timelinePreviewPreset.label,
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                  const Icon(Icons.arrow_drop_down),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          // Current time display
-          Text(
-            _formatDuration(timeline.currentPosition),
-            style: const TextStyle(fontFamily: 'monospace'),
-          ),
-          const Text(' / '),
-          Text(
-            _formatDuration(timeline.duration),
-            style: const TextStyle(fontFamily: 'monospace'),
-          ),
-          const SizedBox(width: 32),
-          // Auto Import button
-          IconButton(
-            icon: const Icon(Icons.library_add),
-            onPressed: _autoImportMedia,
-            tooltip: 'Auto Import',
-          ),
-          // Highlight editor button
-          IconButton(
-            icon: const Icon(Icons.auto_awesome),
-            onPressed: _openHighlightEditor,
-            tooltip: 'Edit Highlights',
-          ),
-          IconButton(
-            icon: const Icon(Icons.auto_fix_high),
-            onPressed: _autoEditTimeline,
-            tooltip: 'Auto Edit',
-          ),
-          IconButton(
-            icon: const Icon(Icons.auto_awesome_motion),
-            onPressed: _generateHighlightTimeline,
-            tooltip: 'Generate Highlight',
-          ),
-          const VerticalDivider(),
-          // Zoom controls
-          const Text('Zoom: '),
-          IconButton(
-            icon: const Icon(Icons.remove),
-            onPressed: _zoomOut,
-            tooltip: 'Zoom Out',
-            iconSize: 20,
-          ),
-          SizedBox(
-            width: 100,
-            child: Slider(
-              value: _pixelsPerSecond,
-              min: 10,
-              max: 200,
-              onChanged: (value) {
-                setState(() {
-                  _pixelsPerSecond = value;
-                });
+            const SizedBox(width: 16),
+            // Timeline group selector
+            DropdownButton<String>(
+              value: activeGroup?.id,
+              hint: const Text('Select Group'),
+              items: groups.map((g) => DropdownMenuItem(
+                value: g.id,
+                child: Text(g.name),
+              )).toList(),
+              onChanged: (groupId) {
+                if (groupId != null) {
+                  timelineNotifier.setActiveGroup(groupId);
+                }
               },
             ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.add),
-            onPressed: _zoomIn,
-            tooltip: 'Zoom In',
-            iconSize: 20,
-          ),
-        ],
-      ),
+            // Group management buttons
+            IconButton(
+              icon: const Icon(Icons.add_circle_outline),
+              onPressed: groups.length < 10 ? _showAddGroupDialog : null,
+              tooltip: 'Add Timeline Group',
+              iconSize: 20,
+            ),
+            IconButton(
+              icon: const Icon(Icons.edit),
+              onPressed: activeGroup != null ? _showRenameGroupDialog : null,
+              tooltip: 'Rename Group',
+              iconSize: 20,
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              onPressed: groups.length > 1 && activeGroup != null
+                  ? () => _showDeleteGroupDialog(activeGroup.id)
+                  : null,
+              tooltip: 'Delete Group',
+              iconSize: 20,
+            ),
+            const VerticalDivider(),
+            // Add track buttons
+            IconButton(
+              icon: const Icon(Icons.video_library),
+              onPressed: () {
+                timelineNotifier.addTrack(TrackType.video, name: 'Video Track');
+              },
+              tooltip: 'Add Video Track',
+              iconSize: 20,
+            ),
+            IconButton(
+              icon: const Icon(Icons.audiotrack),
+              onPressed: () {
+                timelineNotifier.addTrack(TrackType.audio, name: 'Audio Track');
+              },
+              tooltip: 'Add Audio Track',
+              iconSize: 20,
+            ),
+            const VerticalDivider(),
+            // Playback controls
+            IconButton(
+              icon: Icon(
+                previewState.isPlaying ? Icons.pause : Icons.play_arrow,
+              ),
+              onPressed: _togglePlayback,
+              tooltip: previewState.isPlaying ? 'Pause' : 'Play',
+            ),
+            IconButton(
+              icon: const Icon(Icons.stop),
+              onPressed: _stopPlayback,
+              tooltip: 'Stop',
+            ),
+            const SizedBox(width: 8),
+            // Preview quality preset
+            PopupMenuButton<PreviewQualityPreset>(
+              tooltip: 'Preview Quality',
+              initialValue: previewState.timelinePreviewPreset,
+              onSelected: (preset) {
+                ref
+                    .read(previewProvider.notifier)
+                    .setTimelinePreviewPreset(preset);
+              },
+              itemBuilder: (context) => PreviewQualityPreset.values
+                  .map(
+                    (preset) => PopupMenuItem(
+                      value: preset,
+                      child: Row(
+                        children: [
+                          if (preset == previewState.timelinePreviewPreset)
+                            const Icon(Icons.check, size: 16)
+                          else
+                            const SizedBox(width: 16),
+                          const SizedBox(width: 8),
+                          Text(preset.label),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.grey[800],
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.high_quality, size: 18),
+                    const SizedBox(width: 6),
+                    Text(
+                      previewState.timelinePreviewPreset.label,
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    const Icon(Icons.arrow_drop_down),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Current time display
+            Text(
+              _formatDuration(timeline.currentPosition),
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+            const Text(' / '),
+            Text(
+              _formatDuration(timeline.duration),
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+            const SizedBox(width: 32),
+            // Auto Import button
+            IconButton(
+              icon: const Icon(Icons.library_add),
+              onPressed: _autoImportMedia,
+              tooltip: 'Auto Import',
+            ),
+            IconButton(
+              icon: const Icon(Icons.auto_fix_high),
+              onPressed: _autoEditTimeline,
+              tooltip: 'Auto Edit',
+            ),
+            IconButton(
+              icon: const Icon(Icons.auto_awesome_motion),
+              onPressed: _generateHighlightTimeline,
+              tooltip: 'Generate Highlight',
+            ),
+            IconButton(
+              icon: const Icon(Icons.music_note),
+              onPressed: _generateAudioWithSuno,
+              tooltip: 'Generate Audio',
+            ),
+            IconButton(
+              icon: Icon(
+                previewState.audioNormalizeEnabled
+                    ? Icons.graphic_eq
+                    : Icons.graphic_eq_outlined,
+                color: previewState.audioNormalizeEnabled
+                    ? Colors.blue[400]
+                    : null,
+              ),
+              onPressed: () {
+                ref
+                    .read(previewProvider.notifier)
+                    .setAudioNormalize(!previewState.audioNormalizeEnabled);
+              },
+              tooltip: 'Audio Normalize',
+            ),
+            const VerticalDivider(),
+            // Zoom controls
+            const Text('Zoom: '),
+            IconButton(
+              icon: const Icon(Icons.remove),
+              onPressed: _zoomOut,
+              tooltip: 'Zoom Out',
+              iconSize: 20,
+            ),
+            SizedBox(
+              width: 100,
+              child: Slider(
+                value: _pixelsPerSecond,
+                min: 10,
+                max: 200,
+                onChanged: (value) {
+                  setState(() {
+                    _pixelsPerSecond = value;
+                  });
+                },
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.add),
+              onPressed: _zoomIn,
+              tooltip: 'Zoom In',
+              iconSize: 20,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -261,50 +596,60 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   ) {
     return LayoutBuilder(
       builder: (context, constraints) {
+        final horizontalOffset = _scrollController.hasClients
+            ? _scrollController.offset
+            : 0.0;
+        final playheadLeft =
+            _trackHeaderWidth +
+            _durationToPixels(currentPosition) -
+            horizontalOffset;
         return SingleChildScrollView(
           child: Stack(
             children: [
               SingleChildScrollView(
-              controller: _scrollController,
-              scrollDirection: Axis.horizontal,
-              child: SizedBox(
-                width: _getTimelineWidth(),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Time ruler
-                    _buildTimeRuler(),
-                    const Divider(height: 1),
-                    // Video tracks
-                    if (videoTracks.isEmpty)
-                      _buildEmptyTrackPlaceholder('Add video tracks', TrackType.video)
-                    else
-                      ...videoTracks.map((track) => _buildTrack(track)),
-                    const Divider(height: 2, thickness: 2),
-                    // Audio tracks
-                    if (audioTracks.isEmpty)
-                      _buildEmptyTrackPlaceholder('Add audio tracks', TrackType.audio)
-                    else
-                      ...audioTracks.map((track) => _buildTrack(track)),
-                  ],
+                controller: _scrollController,
+                scrollDirection: Axis.horizontal,
+                child: SizedBox(
+                  width: _getTimelineWidth(),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // Time ruler
+                      _buildTimeRuler(),
+                      const Divider(height: 1),
+                      // Video tracks
+                      if (videoTracks.isEmpty)
+                        _buildEmptyTrackPlaceholder(
+                          'Add video tracks',
+                          TrackType.video,
+                        )
+                      else
+                        ...videoTracks.map((track) => _buildTrack(track)),
+                      const Divider(height: 2, thickness: 2),
+                      // Audio tracks
+                      if (audioTracks.isEmpty)
+                        _buildEmptyTrackPlaceholder(
+                          'Add audio tracks',
+                          TrackType.audio,
+                        )
+                      else
+                        ...audioTracks.map((track) => _buildTrack(track)),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            // Max duration marker
-            _buildMaxDurationMarker(),
-            // Playhead
-            Positioned(
-              left: _trackHeaderWidth + _durationToPixels(currentPosition),
-              top: 0,
-              bottom: 0,
-              child: Container(
-                width: 2,
-                color: Colors.red,
+              // Max duration marker
+              _buildMaxDurationMarker(horizontalOffset: horizontalOffset),
+              // Playhead
+              Positioned(
+                left: playheadLeft,
+                top: 0,
+                bottom: 0,
+                child: Container(width: 2, color: Colors.red),
               ),
-            ),
-          ],
-        ),
+            ],
+          ),
         );
       },
     );
@@ -322,11 +667,8 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
             if (x < 0) return;
             final position = _pixelsToDuration(x);
             ref.read(timelineProvider.notifier).setCurrentPosition(position);
-            final previewState = ref.read(previewProvider);
-            if (previewState.timelinePreviewPath != null &&
-                previewState.currentVideoPath == previewState.timelinePreviewPath) {
-              ref.read(previewProvider.notifier).seekTo(position);
-            }
+            // Always update preview position when playhead changes
+            ref.read(previewProvider.notifier).seekTo(position);
           },
           child: Container(
             height: 30,
@@ -351,8 +693,10 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   }
 
   Widget _buildTrack(Track track) {
-    final contentKey =
-        _trackContentKeys.putIfAbsent(track.id, () => GlobalKey());
+    final contentKey = _trackContentKeys.putIfAbsent(
+      track.id,
+      () => GlobalKey(),
+    );
     return DragTarget<MediaItem>(
       onAcceptWithDetails: (details) {
         if (track.isLocked) return;
@@ -369,9 +713,7 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
             color: candidateData.isNotEmpty && !track.isLocked
                 ? Colors.blue.withValues(alpha: 0.2)
                 : Colors.grey[800],
-            border: Border(
-              bottom: BorderSide(color: Colors.grey[700]!),
-            ),
+            border: Border(bottom: BorderSide(color: Colors.grey[700]!)),
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -408,12 +750,30 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
                       children: [
                         IconButton(
                           icon: Icon(
-                            track.isMuted ? Icons.volume_off : Icons.volume_up,
+                            track.isVisible ? Icons.visibility : Icons.visibility_off,
                             size: 16,
                           ),
-                          onPressed: () => _toggleTrackMute(track.id),
+                          onPressed: () => _toggleTrackVisibility(track.id),
                           padding: EdgeInsets.zero,
                           constraints: const BoxConstraints(),
+                          tooltip: track.isVisible ? 'Hide Track' : 'Show Track',
+                        ),
+                        const SizedBox(width: 4),
+                        GestureDetector(
+                          onTapDown: (details) {
+                            _showVolumePopup(context, details.globalPosition, track);
+                          },
+                          child: Container(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 24,
+                              minHeight: 24,
+                            ),
+                            child: Icon(
+                              track.isMuted ? Icons.volume_off : Icons.volume_up,
+                              size: 16,
+                            ),
+                          ),
                         ),
                         const SizedBox(width: 4),
                         IconButton(
@@ -432,29 +792,47 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
               ),
               // Track content
               Expanded(
-                child: GestureDetector(
-                  onTapDown: (details) {
-                    final position = _globalOffsetToTimelinePosition(
+                child: DragTarget<Clip>(
+                  onAcceptWithDetails: (details) {
+                    if (track.isLocked) return;
+                    final clip = details.data;
+                    final startTime = _globalOffsetToTimelinePosition(
                       contentKey,
-                      details.globalPosition,
+                      details.offset,
                     );
-                    ref.read(timelineProvider.notifier).setCurrentPosition(position);
-                    final previewState = ref.read(previewProvider);
-                    if (previewState.timelinePreviewPath != null &&
-                        previewState.currentVideoPath ==
-                            previewState.timelinePreviewPath) {
-                      ref.read(previewProvider.notifier).seekTo(position);
-                    }
+                    // Move clip to this track
+                    ref.read(timelineProvider.notifier).moveClipToTrack(
+                          clip.id,
+                          track.id,
+                          startTime,
+                        );
                   },
-                  child: Container(
-                    key: contentKey,
-                    color: Colors.transparent,
-                    child: Stack(
-                      children: track.clips.map((clip) {
-                        return _buildClip(track, clip, contentKey);
-                      }).toList(),
-                    ),
-                  ),
+                  builder: (context, candidateClips, rejectedClips) {
+                    return GestureDetector(
+                      onTapDown: (details) {
+                        final position = _globalOffsetToTimelinePosition(
+                          contentKey,
+                          details.globalPosition,
+                        );
+                        ref
+                            .read(timelineProvider.notifier)
+                            .setCurrentPosition(position);
+                        // Always update preview position when playhead changes
+                        ref.read(previewProvider.notifier).seekTo(position);
+                      },
+                      child: Container(
+                        key: contentKey,
+                        color: candidateClips.isNotEmpty && !track.isLocked
+                            ? Colors.green.withValues(alpha: 0.1)
+                            : Colors.transparent,
+                        child: Stack(
+                          children: track.clips.map((clip) {
+                            return _buildClip(track, clip, contentKey);
+                          }).toList(),
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ],
@@ -477,391 +855,396 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
       ),
     );
 
-	    final left = _durationToPixels(clip.startTime);
-	    final width = _durationToPixels(clip.duration);
-	    final isSelected = selection.selectedClipId == clip.id;
-	    final isAudioClip = mediaItem.type == MediaType.audio;
-      final fileExists =
-          mediaItem.filePath.isNotEmpty && File(mediaItem.filePath).existsSync();
-      final dragInset = isSelected && !track.isLocked ? 8.0 : 0.0;
+    final left = _durationToPixels(clip.startTime);
+    final width = _durationToPixels(clip.duration);
+    final isSelected = selection.selectedClipId == clip.id;
+    final isAudioClip = mediaItem.type == MediaType.audio;
+    final fileExists =
+        mediaItem.filePath.isNotEmpty && File(mediaItem.filePath).existsSync();
+    final dragInset = isSelected && !track.isLocked ? 8.0 : 0.0;
 
     if (isAudioClip) {
       _ensureWaveform(mediaItem);
     }
 
-		    return Positioned(
-		      left: left,
-		      top: 4,
-          child: SizedBox(
-            width: width,
-	            height: 72,
-	            child: Stack(
-	              children: [
-                  // Visual layer (always full-width)
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: isSelected ? Colors.blue[700] : Colors.blue[900],
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(
-                            color: isSelected ? Colors.yellow : Colors.blue[700]!,
-                            width: isSelected ? 2 : 1,
-                          ),
-                          image: !isAudioClip && mediaItem.thumbnail != null
-                              ? DecorationImage(
-                                  image: MemoryImage(mediaItem.thumbnail!),
-                                  fit: BoxFit.cover,
-                                  opacity: 0.3,
-                                )
-                              : null,
-                        ),
-                        padding: const EdgeInsets.all(4),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.6),
-                                borderRadius: BorderRadius.circular(2),
-                              ),
-                              child: Text(
-                                mediaItem.name,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 4,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withValues(alpha: 0.6),
-                                borderRadius: BorderRadius.circular(2),
-                              ),
-                              child: Text(
-                                _formatDuration(clip.duration),
-                                style: const TextStyle(fontSize: 10),
-                              ),
-                            ),
-                            if (isAudioClip)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 4),
-                                child: SizedBox(
-                                  height: 16,
-                                  child: _buildWaveform(mediaItem),
-                                ),
-                              ),
-                            if (clip.effects.isNotEmpty) ...[
-                              const SizedBox(height: 2),
-                              Text(
-                                '${clip.effects.length} effects',
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  color: Colors.green[300],
-                                ),
-                              ),
-                            ],
-                            // Show transition indicators
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (clip.inTransition != null)
-                                  Container(
-                                    margin: const EdgeInsets.only(
-                                      right: 4,
-                                      top: 2,
-                                    ),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 4,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.purple[700],
-                                      borderRadius: BorderRadius.circular(2),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: const [
-                                        Icon(
-                                          Icons.arrow_forward,
-                                          size: 8,
-                                          color: Colors.white,
-                                        ),
-                                        SizedBox(width: 2),
-                                        Text(
-                                          'In',
-                                          style: TextStyle(
-                                            fontSize: 8,
-                                            color: Colors.white,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                if (clip.outTransition != null)
-                                  Container(
-                                    margin: const EdgeInsets.only(top: 2),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 4,
-                                      vertical: 2,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.purple[700],
-                                      borderRadius: BorderRadius.circular(2),
-                                    ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: const [
-                                        Icon(
-                                          Icons.arrow_back,
-                                          size: 8,
-                                          color: Colors.white,
-                                        ),
-                                        SizedBox(width: 2),
-                                        Text(
-                                          'Out',
-                                          style: TextStyle(
-                                            fontSize: 8,
-                                            color: Colors.white,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
+    return Positioned(
+      left: left,
+      top: 4,
+      child: Opacity(
+        opacity: (!track.isVisible || !clip.isVisible) ? 0.3 : 1.0,
+        child: SizedBox(
+          width: width,
+          height: 72,
+          child: Stack(
+            children: [
+            // Visual layer (always full-width)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? (isAudioClip ? Colors.green[700] : Colors.blue[700])
+                        : (isAudioClip ? Colors.green[900] : Colors.blue[900]),
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: isSelected
+                          ? Colors.yellow
+                          : (isAudioClip ? Colors.green[700]! : Colors.blue[700]!),
+                      width: isSelected ? 2 : 1,
                     ),
+                    image: !isAudioClip && mediaItem.thumbnail != null
+                        ? DecorationImage(
+                            image: MemoryImage(mediaItem.thumbnail!),
+                            fit: BoxFit.cover,
+                            opacity: 0.3,
+                          )
+                        : null,
                   ),
-                  if (!fileExists)
-                    Positioned(
-                      right: 6,
-                      top: 6,
-                      child: IgnorePointer(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.red[700],
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: const Text(
-                            'Missing',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                  padding: const EdgeInsets.all(4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 2,
                         ),
-                      ),
-                    ),
-                  // Drag/selection hit layer (inset when selected so trim handles win).
-                  Positioned(
-                    left: dragInset,
-                    right: dragInset,
-                    top: 0,
-                    bottom: 0,
-                    child: Listener(
-                      onPointerDown: (event) {
-                        // Select clip when clicked or dragged
-	                    ref
-	                        .read(selectionProvider.notifier)
-	                        .selectClip(clip.id, track.id);
-                    _draggingClipId = clip.id;
-                    _draggingClipStartTime = clip.startTime;
-                    _dragStartGlobalDx = event.position.dx;
-                  },
-                  child: Draggable<Clip>(
-                    data: clip,
-                    maxSimultaneousDrags: track.isLocked ? 0 : null,
-                    onDragEnd: (details) {
-                      if (track.isLocked) return;
-
-                      final startTime = _draggingClipId == clip.id &&
-                              _draggingClipStartTime != null &&
-                              _dragStartGlobalDx != null
-                          ? (_draggingClipStartTime! +
-                              _pixelsToDurationDelta(
-                                details.offset.dx - _dragStartGlobalDx!,
-                              ))
-                          : _globalOffsetToTimelinePosition(
-                              trackContentKey,
-                              details.offset,
-                            );
-
-                      _draggingClipId = null;
-                      _draggingClipStartTime = null;
-                      _dragStartGlobalDx = null;
-
-                      var clamped = startTime;
-                      if (clamped < Duration.zero) clamped = Duration.zero;
-
-                      // Insert without trimming: keep this clip's duration and let the
-                      // timeline model ripple-shift other clips to the right as needed.
-                      ref
-                          .read(timelineProvider.notifier)
-                          .moveClip(clip.id, clamped);
-                    },
-                    feedback: Material(
-                      color: Colors.transparent,
-                      child: Container(
-                        width: width,
-                        height: 72,
                         decoration: BoxDecoration(
-                          color: Colors.blue.withValues(alpha: 0.7),
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(color: Colors.white, width: 2),
-                          image: !isAudioClip && mediaItem.thumbnail != null
-                              ? DecorationImage(
-                                  image: MemoryImage(mediaItem.thumbnail!),
-                                  fit: BoxFit.cover,
-                                  opacity: 0.3,
-                                )
-                              : null,
+                          color: Colors.black.withValues(alpha: 0.6),
+                          borderRadius: BorderRadius.circular(2),
                         ),
-                        child: Center(
-                          child: Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.6),
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                            child: Text(
-                              mediaItem.name,
-                              style: const TextStyle(color: Colors.white),
-                              overflow: TextOverflow.ellipsis,
-                            ),
+                        child: Text(
+                          mediaItem.name,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
                           ),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
+                      const SizedBox(height: 2),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.6),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                        child: Text(
+                          _formatDuration(clip.duration),
+                          style: const TextStyle(fontSize: 10),
+                        ),
+                      ),
+                      if (isAudioClip)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: SizedBox(
+                            height: 16,
+                            child: _buildWaveform(mediaItem),
+                          ),
+                        ),
+                      if (clip.effects.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          '${clip.effects.length} effects',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.green[300],
+                          ),
+                        ),
+                      ],
+                      // Show transition indicators
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (clip.inTransition != null)
+                            Container(
+                              margin: const EdgeInsets.only(right: 4, top: 2),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.purple[700],
+                                borderRadius: BorderRadius.circular(2),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: const [
+                                  Icon(
+                                    Icons.arrow_forward,
+                                    size: 8,
+                                    color: Colors.white,
+                                  ),
+                                  SizedBox(width: 2),
+                                  Text(
+                                    'In',
+                                    style: TextStyle(
+                                      fontSize: 8,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          if (clip.outTransition != null)
+                            Container(
+                              margin: const EdgeInsets.only(top: 2),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.purple[700],
+                                borderRadius: BorderRadius.circular(2),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: const [
+                                  Icon(
+                                    Icons.arrow_back,
+                                    size: 8,
+                                    color: Colors.white,
+                                  ),
+                                  SizedBox(width: 2),
+                                  Text(
+                                    'Out',
+                                    style: TextStyle(
+                                      fontSize: 8,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            if (!fileExists)
+              Positioned(
+                right: 6,
+                top: 6,
+                child: IgnorePointer(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
                     ),
-                    childWhenDragging: Container(
-                        color: Colors.transparent,
+                    decoration: BoxDecoration(
+                      color: Colors.red[700],
+                      borderRadius: BorderRadius.circular(4),
                     ),
-                    child: Container(
-                      key: ValueKey('clip_hit_${clip.id}'),
-                      color: Colors.transparent,
+                    child: const Text(
+                      'Missing',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ),
-                  ),
-                // Left trim handle (outside Draggable to avoid gesture conflicts)
-                if (isSelected && !track.isLocked)
-                  Positioned(
-                    left: 0,
-                    top: 0,
-                    bottom: 0,
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.resizeLeft,
-                      child: GestureDetector(
-                        key: ValueKey('trim_left_${clip.id}'),
-                        behavior: HitTestBehavior.opaque,
-                        onHorizontalDragDown: (details) {
-                          ref
-                              .read(selectionProvider.notifier)
-                              .selectClip(clip.id, track.id);
-                          _startTrimLeft(clip, track.id, details);
-                        },
-                        onHorizontalDragUpdate: (details) {
-                          _updateTrimLeft(details);
-                        },
-                        onHorizontalDragEnd: (details) {
-                          _endTrim();
-                        },
+              ),
+            // Drag/selection hit layer (inset when selected so trim handles win).
+            Positioned(
+              left: dragInset,
+              right: dragInset,
+              top: 0,
+              bottom: 0,
+              child: Listener(
+                onPointerDown: (event) {
+                  // Select clip when clicked or dragged
+                  ref
+                      .read(selectionProvider.notifier)
+                      .selectClip(clip.id, track.id);
+                  _draggingClipId = clip.id;
+                  _draggingClipStartTime = clip.startTime;
+                  _dragStartGlobalDx = event.position.dx;
+                },
+                child: Draggable<Clip>(
+                  data: clip,
+                  maxSimultaneousDrags: track.isLocked ? 0 : null,
+                  onDragEnd: (details) {
+                    if (track.isLocked) return;
+
+                    final startTime =
+                        _draggingClipId == clip.id &&
+                            _draggingClipStartTime != null &&
+                            _dragStartGlobalDx != null
+                        ? (_draggingClipStartTime! +
+                              _pixelsToDurationDelta(
+                                details.offset.dx - _dragStartGlobalDx!,
+                              ))
+                        : _globalOffsetToTimelinePosition(
+                            trackContentKey,
+                            details.offset,
+                          );
+
+                    _draggingClipId = null;
+                    _draggingClipStartTime = null;
+                    _dragStartGlobalDx = null;
+
+                    var clamped = startTime;
+                    if (clamped < Duration.zero) clamped = Duration.zero;
+
+                    // Insert without trimming: keep this clip's duration and let the
+                    // timeline model ripple-shift other clips to the right as needed.
+                    ref
+                        .read(timelineProvider.notifier)
+                        .moveClip(clip.id, clamped);
+                  },
+                  feedback: Material(
+                    color: Colors.transparent,
+                    child: Container(
+                      width: width,
+                      height: 72,
+                      decoration: BoxDecoration(
+                        color: isAudioClip
+                            ? Colors.green.withValues(alpha: 0.7)
+                            : Colors.blue.withValues(alpha: 0.7),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.white, width: 2),
+                        image: !isAudioClip && mediaItem.thumbnail != null
+                            ? DecorationImage(
+                                image: MemoryImage(mediaItem.thumbnail!),
+                                fit: BoxFit.cover,
+                                opacity: 0.3,
+                              )
+                            : null,
+                      ),
+                      child: Center(
                         child: Container(
-                          width: 8,
+                          padding: const EdgeInsets.all(4),
                           decoration: BoxDecoration(
-                            color: Colors.yellow.withValues(alpha: 0.8),
-                            borderRadius: const BorderRadius.only(
-                              topLeft: Radius.circular(4),
-                              bottomLeft: Radius.circular(4),
-                            ),
+                            color: Colors.black.withValues(alpha: 0.6),
+                            borderRadius: BorderRadius.circular(2),
                           ),
-                          child: Center(
-                            child: Container(
-                              width: 2,
-                              height: 40,
-                              color: Colors.white,
-                            ),
+                          child: Text(
+                            mediaItem.name,
+                            style: const TextStyle(color: Colors.white),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ),
                     ),
                   ),
-                // Right trim handle (outside Draggable to avoid gesture conflicts)
-                if (isSelected && !track.isLocked)
-                  Positioned(
-                    right: 0,
-                    top: 0,
-                    bottom: 0,
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.resizeRight,
-                      child: GestureDetector(
-                        key: ValueKey('trim_right_${clip.id}'),
-                        behavior: HitTestBehavior.opaque,
-                        onHorizontalDragDown: (details) {
-                          ref
-                              .read(selectionProvider.notifier)
-                              .selectClip(clip.id, track.id);
-                          _startTrimRight(clip, track.id, details);
-                        },
-                        onHorizontalDragUpdate: (details) {
-                          _updateTrimRight(details);
-                        },
-                        onHorizontalDragEnd: (details) {
-                          _endTrim();
-                        },
-                        child: Container(
-                          width: 8,
-                          decoration: BoxDecoration(
-                            color: Colors.yellow.withValues(alpha: 0.8),
-                            borderRadius: const BorderRadius.only(
-                              topRight: Radius.circular(4),
-                              bottomRight: Radius.circular(4),
-                            ),
-                          ),
-                          child: Center(
-                            child: Container(
-                              width: 2,
-                              height: 40,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
+                  childWhenDragging: Container(color: Colors.transparent),
+                  child: Container(
+                    key: ValueKey('clip_hit_${clip.id}'),
+                    color: Colors.transparent,
                   ),
-              ],
+                ),
+              ),
             ),
+            // Left trim handle (outside Draggable to avoid gesture conflicts)
+            if (isSelected && !track.isLocked)
+              Positioned(
+                left: 0,
+                top: 0,
+                bottom: 0,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.resizeLeft,
+                  child: GestureDetector(
+                    key: ValueKey('trim_left_${clip.id}'),
+                    behavior: HitTestBehavior.opaque,
+                    onHorizontalDragDown: (details) {
+                      ref
+                          .read(selectionProvider.notifier)
+                          .selectClip(clip.id, track.id);
+                      _startTrimLeft(clip, track.id, details);
+                    },
+                    onHorizontalDragUpdate: (details) {
+                      _updateTrimLeft(details);
+                    },
+                    onHorizontalDragEnd: (details) {
+                      _endTrim();
+                    },
+                    child: Container(
+                      width: 8,
+                      decoration: BoxDecoration(
+                        color: Colors.yellow.withValues(alpha: 0.8),
+                        borderRadius: const BorderRadius.only(
+                          topLeft: Radius.circular(4),
+                          bottomLeft: Radius.circular(4),
+                        ),
+                      ),
+                      child: Center(
+                        child: Container(
+                          width: 2,
+                          height: 40,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            // Right trim handle (outside Draggable to avoid gesture conflicts)
+            if (isSelected && !track.isLocked)
+              Positioned(
+                right: 0,
+                top: 0,
+                bottom: 0,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.resizeRight,
+                  child: GestureDetector(
+                    key: ValueKey('trim_right_${clip.id}'),
+                    behavior: HitTestBehavior.opaque,
+                    onHorizontalDragDown: (details) {
+                      ref
+                          .read(selectionProvider.notifier)
+                          .selectClip(clip.id, track.id);
+                      _startTrimRight(clip, track.id, details);
+                    },
+                    onHorizontalDragUpdate: (details) {
+                      _updateTrimRight(details);
+                    },
+                    onHorizontalDragEnd: (details) {
+                      _endTrim();
+                    },
+                    child: Container(
+                      width: 8,
+                      decoration: BoxDecoration(
+                        color: Colors.yellow.withValues(alpha: 0.8),
+                        borderRadius: const BorderRadius.only(
+                          topRight: Radius.circular(4),
+                          bottomRight: Radius.circular(4),
+                        ),
+                      ),
+                      child: Center(
+                        child: Container(
+                          width: 2,
+                          height: 40,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
-		    );
-		  }
+        ),
+      ),
+    );
+  }
 
   Widget _buildEmptyTrackPlaceholder(String message, TrackType type) {
-    final contentKey = type == TrackType.video ? _emptyVideoDropKey : _emptyAudioDropKey;
+    final contentKey = type == TrackType.video
+        ? _emptyVideoDropKey
+        : _emptyAudioDropKey;
 
     // NOTE: This is inside a vertical SingleChildScrollView, so we must keep a
     // bounded height to avoid "infinite height constraints" with stretch.
     return Container(
       height: 80,
       decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: Colors.grey[700]!),
-        ),
+        border: Border(bottom: BorderSide(color: Colors.grey[700]!)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -891,9 +1274,15 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
 
                 if (tracks.isNotEmpty) {
                   final newTrack = tracks.last;
-                  final startTime =
-                      _globalOffsetToTimelinePosition(contentKey, details.offset);
-                  _addClipToTrack(newTrack.id, details.data, startTime: startTime);
+                  final startTime = _globalOffsetToTimelinePosition(
+                    contentKey,
+                    details.offset,
+                  );
+                  _addClipToTrack(
+                    newTrack.id,
+                    details.data,
+                    startTime: startTime,
+                  );
                 }
               },
               builder: (context, candidateData, rejectedData) {
@@ -904,11 +1293,10 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
                       : Colors.grey[800],
                   child: Center(
                     child: Text(
-                      candidateData.isNotEmpty ? 'Drop to create track' : message,
-                      style: TextStyle(
-                        color: Colors.grey[600],
-                        fontSize: 14,
-                      ),
+                      candidateData.isNotEmpty
+                          ? 'Drop to create track'
+                          : message,
+                      style: TextStyle(color: Colors.grey[600], fontSize: 14),
                     ),
                   ),
                 );
@@ -949,6 +1337,13 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     timelineNotifier.addClip(trackId, clip);
   }
 
+  void _toggleTrackVisibility(String trackId) {
+    final timeline = ref.read(timelineProvider);
+    final track = timeline.tracks.firstWhere((t) => t.id == trackId);
+    final updatedTrack = track.copyWith(isVisible: !track.isVisible);
+    ref.read(timelineProvider.notifier).updateTrack(updatedTrack);
+  }
+
   void _toggleTrackMute(String trackId) {
     final audioOps = ref.read(audioOperationsProvider);
     audioOps.toggleTrackMute(trackId);
@@ -957,6 +1352,58 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   void _toggleTrackLock(String trackId) {
     final audioOps = ref.read(audioOperationsProvider);
     audioOps.toggleTrackLock(trackId);
+  }
+
+  void _updateTrackVolume(String trackId, double volume) {
+    final timeline = ref.read(timelineProvider);
+    final track = timeline.tracks.firstWhere((t) => t.id == trackId);
+    final updatedTrack = track.copyWith(volume: volume);
+    ref.read(timelineProvider.notifier).updateTrack(updatedTrack);
+  }
+
+  void _showVolumePopup(BuildContext context, Offset position, Track track) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.transparent,
+      builder: (context) {
+        return Stack(
+          children: [
+            // Invisible barrier to close on outside click
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: () => Navigator.of(context).pop(),
+                child: Container(color: Colors.transparent),
+              ),
+            ),
+            // Volume control popup
+            Positioned(
+              left: position.dx - 80,
+              top: position.dy + 10,
+              child: Material(
+                elevation: 8,
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[850],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: _VolumeControl(
+                    track: track,
+                    onVolumeChanged: (value) {
+                      _updateTrackVolume(track.id, value);
+                    },
+                    onMuteToggle: () {
+                      _toggleTrackMute(track.id);
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _togglePlayback() {
@@ -986,18 +1433,21 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
         ),
       ).then((success) {
         if (!mounted || !success) return;
-        previewNotifier.seekTo(timeline.currentPosition);
         previewNotifier.togglePlayPause();
       });
       return;
     }
 
     if (!previewState.isPlaying) {
-      previewNotifier.seekTo(timeline.currentPosition);
+      // No-op: timeline stream starts at current position.
     } else {
       // When pausing, sync timeline position with preview position
       final timelineNotifier = ref.read(timelineProvider.notifier);
-      timelineNotifier.setCurrentPosition(previewState.currentPosition);
+      final timelinePosition = previewState.isTimelineStreaming
+          ? previewState.timelineStreamStartOffset +
+                previewState.currentPosition
+          : previewState.currentPosition;
+      timelineNotifier.setCurrentPosition(timelinePosition);
     }
 
     previewNotifier.togglePlayPause();
@@ -1026,20 +1476,22 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   }
 
   void _ensureWaveform(MediaItem item) {
-    if (_waveformCache.containsKey(item.id) || _waveformLoading.contains(item.id)) {
+    if (_waveformCache.containsKey(item.id) ||
+        _waveformLoading.contains(item.id)) {
       return;
     }
     _waveformLoading.add(item.id);
     _videoEngine
         .extractWaveform(item.filePath, sampleCount: 200)
         .then((waveform) {
-      if (!mounted) return;
-      setState(() {
-        _waveformCache[item.id] = waveform;
-      });
-    }).whenComplete(() {
-      _waveformLoading.remove(item.id);
-    });
+          if (!mounted) return;
+          setState(() {
+            _waveformCache[item.id] = waveform;
+          });
+        })
+        .whenComplete(() {
+          _waveformLoading.remove(item.id);
+        });
   }
 
   Widget _buildWaveform(MediaItem item) {
@@ -1052,12 +1504,10 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
         ),
       );
     }
-    return CustomPaint(
-      painter: _WaveformPainter(waveform),
-    );
+    return CustomPaint(painter: _WaveformPainter(waveform));
   }
 
-  Widget _buildMaxDurationMarker() {
+  Widget _buildMaxDurationMarker({required double horizontalOffset}) {
     final projectState = ref.watch(projectProvider);
     final timeline = ref.watch(timelineProvider);
 
@@ -1071,7 +1521,7 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     final isExceeding = actualDuration > maxDuration;
 
     return Positioned(
-      left: _trackHeaderWidth + maxDurationX,
+      left: _trackHeaderWidth + maxDurationX - horizontalOffset,
       top: 0,
       bottom: 0,
       child: Column(
@@ -1084,7 +1534,11 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
             ),
             child: Text(
               'Max',
-              style: const TextStyle(fontSize: 10, color: Colors.black, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                fontSize: 10,
+                color: Colors.black,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
           Expanded(
@@ -1136,41 +1590,10 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
       }
     }
 
-    final contentWidth = _durationToPixels(displayDuration).clamp(800.0, double.infinity);
+    final contentWidth = _durationToPixels(
+      displayDuration,
+    ).clamp(800.0, double.infinity);
     return _trackHeaderWidth + contentWidth;
-  }
-
-  Future<void> _openHighlightEditor() async {
-    final videoTracks = ref.read(videoTracksProvider);
-
-    if (videoTracks.isEmpty) return;
-
-    // Get clips from the first video track
-    final track = videoTracks.first;
-    if (track.clips.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No clips in timeline to edit'),
-        ),
-      );
-      return;
-    }
-
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (context) => HighlightEditorDialog(
-        trackId: track.id,
-        highlightClips: track.clips,
-      ),
-    );
-
-    if (result == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Highlight clips updated'),
-        ),
-      );
-    }
   }
 
   Future<void> _autoEditTimeline() async {
@@ -1182,15 +1605,14 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
       return;
     }
 
-    final timeline =
-        await _autoEditorService.createAutoTimeline(mediaLibrary);
+    final timeline = await _autoEditorService.createAutoTimeline(mediaLibrary);
 
     ref.read(timelineProvider.notifier).loadTimeline(timeline);
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Auto edit completed')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Auto edit completed')));
     }
   }
 
@@ -1206,11 +1628,15 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     final mediaLibrary = ref.read(mediaLibraryProvider);
     final request = await showDialog<HighlightGenerationRequest>(
       context: context,
-      builder: (context) => HighlightGenerationDialog(mediaLibrary: mediaLibrary),
+      builder: (context) =>
+          HighlightGenerationDialog(mediaLibrary: mediaLibrary),
     );
     if (request == null) return;
 
     if (!mounted) return;
+    final progressNotifier = ValueNotifier<HighlightGenerationProgress>(
+      const HighlightGenerationProgress(HighlightGenerationStage.preparing),
+    );
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -1228,10 +1654,38 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
               pattern: request.pattern,
               preferences: request.preferences,
               bgmTrack: request.bgm,
+              onProgress: (p) => progressNotifier.value = p,
             );
 
             if (!mounted) return;
-            ref.read(timelineProvider.notifier).loadTimeline(highlightTimeline);
+
+            // Handle destination
+            if (request.destination == HighlightDestination.newGroup) {
+              // Create new group with generated timeline
+              final groupName = request.newGroupName ?? 'ハイライト ${request.pattern.name}';
+              try {
+                ref.read(timelineProvider.notifier).addGroup(groupName);
+                // New group becomes active automatically, then load timeline
+                ref.read(timelineProvider.notifier).loadTimeline(highlightTimeline);
+              } catch (e) {
+                // Group limit reached
+                if (!mounted) return;
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(this.context).showSnackBar(
+                  SnackBar(content: Text('Failed to create group: $e')),
+                );
+                return;
+              }
+            } else {
+              // Replace active group's timeline
+              ref.read(timelineProvider.notifier).loadTimeline(highlightTimeline);
+            }
+
+            ref.read(projectProvider.notifier).markAsModified();
+
+            progressNotifier.value = const HighlightGenerationProgress(
+              HighlightGenerationStage.done,
+            );
             Navigator.of(context).pop();
             ScaffoldMessenger.of(this.context).showSnackBar(
               const SnackBar(content: Text('Highlight timeline generated')),
@@ -1245,17 +1699,36 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
           }
         });
 
-        return const AlertDialog(
-          title: Text('ハイライト生成中'),
-          content: SizedBox(
-            height: 72,
-            child: Center(
-              child: CircularProgressIndicator(),
-            ),
-          ),
+        return ValueListenableBuilder<HighlightGenerationProgress>(
+          valueListenable: progressNotifier,
+          builder: (context, progress, _) {
+            final fraction = progress.fraction;
+            final countText =
+                (progress.completed != null && progress.total != null)
+                ? '${progress.completed}/${progress.total}'
+                : null;
+
+            return AlertDialog(
+              title: const Text('ハイライト生成中'),
+              content: SizedBox(
+                height: 92,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(progress.stageLabel),
+                    if (countText != null) Text(countText),
+                    const SizedBox(height: 12),
+                    LinearProgressIndicator(value: fraction),
+                  ],
+                ),
+              ),
+            );
+          },
         );
       },
     );
+    progressNotifier.dispose();
   }
 
   Future<void> _autoImportMedia() async {
@@ -1292,10 +1765,9 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     ref.read(timelineProvider.notifier).clear();
 
     // Create a video track
-    ref.read(timelineProvider.notifier).addTrack(
-      TrackType.video,
-      name: 'Auto Import Track',
-    );
+    ref
+        .read(timelineProvider.notifier)
+        .addTrack(TrackType.video, name: 'Auto Import Track');
 
     // Get the created track
     final timeline = ref.read(timelineProvider);
@@ -1322,9 +1794,9 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     final totalDuration = currentTime;
     final projectState = ref.read(projectProvider);
     if (projectState.hasProject) {
-      ref.read(projectProvider.notifier).updateProjectSettings(
-        maxDuration: totalDuration,
-      );
+      ref
+          .read(projectProvider.notifier)
+          .updateProjectSettings(maxDuration: totalDuration);
     }
 
     if (mounted) {
@@ -1432,7 +1904,9 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
 
     // New end time stays the same
     final newEndTime = _originalEndTime!;
-    ref.read(timelineProvider.notifier).trimClip(_trimmingClipId!, newStartTime, newEndTime);
+    ref
+        .read(timelineProvider.notifier)
+        .trimClip(_trimmingClipId!, newStartTime, newEndTime);
   }
 
   void _updateTrimRight(DragUpdateDetails details) {
@@ -1459,7 +1933,9 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
 
     // Start time stays the same
     final newStartTime = _originalStartTime!;
-    ref.read(timelineProvider.notifier).trimClip(_trimmingClipId!, newStartTime, newEndTime);
+    ref
+        .read(timelineProvider.notifier)
+        .trimClip(_trimmingClipId!, newStartTime, newEndTime);
   }
 
   void _endTrim() {
@@ -1492,9 +1968,7 @@ class _TimeRulerPainter extends CustomPainter {
       ..color = Colors.grey[400]!
       ..strokeWidth = 1;
 
-    final textPainter = TextPainter(
-      textDirection: TextDirection.ltr,
-    );
+    final textPainter = TextPainter(textDirection: TextDirection.ltr);
 
     // Draw tick marks and labels
     for (int i = 0; i <= totalSeconds; i++) {
@@ -1511,16 +1985,10 @@ class _TimeRulerPainter extends CustomPainter {
         // Draw time label
         textPainter.text = TextSpan(
           text: _formatTime(i),
-          style: TextStyle(
-            color: Colors.grey[400],
-            fontSize: 10,
-          ),
+          style: TextStyle(color: Colors.grey[400], fontSize: 10),
         );
         textPainter.layout();
-        textPainter.paint(
-          canvas,
-          Offset(x - textPainter.width / 2, 5),
-        );
+        textPainter.paint(canvas, Offset(x - textPainter.width / 2, 5));
       } else {
         canvas.drawLine(
           Offset(x, size.height - 8),
@@ -1542,6 +2010,121 @@ class _TimeRulerPainter extends CustomPainter {
   bool shouldRepaint(_TimeRulerPainter oldDelegate) {
     return totalSeconds != oldDelegate.totalSeconds ||
         pixelsPerSecond != oldDelegate.pixelsPerSecond;
+  }
+}
+
+/// Timeline panel dialog methods (moved to _TimelinePanelState)
+extension _TimelinePanelDialogs on _TimelinePanelState {
+  /// Show dialog to add a new timeline group
+  Future<void> _showAddGroupDialog() async {
+    final controller = TextEditingController(text: 'New Group');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add Timeline Group'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(labelText: 'Group Name'),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.trim().isNotEmpty) {
+      try {
+        ref.read(timelineProvider.notifier).addGroup(result.trim());
+        ref.read(projectProvider.notifier).markAsModified();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to add group: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  /// Show dialog to rename the active timeline group
+  Future<void> _showRenameGroupDialog() async {
+    final activeGroup = ref.read(activeTimelineGroupProvider);
+    if (activeGroup == null) return;
+
+    final controller = TextEditingController(text: activeGroup.name);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename Timeline Group'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(labelText: 'Group Name'),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.trim().isNotEmpty && result.trim() != activeGroup.name) {
+      ref.read(timelineProvider.notifier).renameGroup(activeGroup.id, result.trim());
+      ref.read(projectProvider.notifier).markAsModified();
+    }
+  }
+
+  /// Show confirmation dialog to delete a timeline group
+  Future<void> _showDeleteGroupDialog(String groupId) async {
+    final groups = ref.read(timelineGroupsProvider);
+    final group = groups.where((g) => g.id == groupId).firstOrNull;
+    if (group == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Timeline Group'),
+        content: Text('Are you sure you want to delete "${group.name}"? This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        ref.read(timelineProvider.notifier).removeGroup(groupId);
+        ref.read(projectProvider.notifier).markAsModified();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to delete group: $e')),
+          );
+        }
+      }
+    }
   }
 }
 
@@ -1574,5 +2157,85 @@ class _WaveformPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _WaveformPainter oldDelegate) {
     return oldDelegate.waveform != waveform;
+  }
+}
+
+/// Volume control widget for track volume adjustment
+class _VolumeControl extends StatefulWidget {
+  final Track track;
+  final ValueChanged<double> onVolumeChanged;
+  final VoidCallback onMuteToggle;
+
+  const _VolumeControl({
+    required this.track,
+    required this.onVolumeChanged,
+    required this.onMuteToggle,
+  });
+
+  @override
+  State<_VolumeControl> createState() => _VolumeControlState();
+}
+
+class _VolumeControlState extends State<_VolumeControl> {
+  late double _currentVolume;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentVolume = widget.track.volume;
+  }
+
+  @override
+  void didUpdateWidget(_VolumeControl oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.track.volume != oldWidget.track.volume) {
+      _currentVolume = widget.track.volume;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: Icon(
+                widget.track.isMuted ? Icons.volume_off : Icons.volume_up,
+                size: 18,
+              ),
+              onPressed: widget.onMuteToggle,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              tooltip: widget.track.isMuted ? 'Unmute' : 'Mute',
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${(_currentVolume * 100).round()}%',
+              style: const TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: 150,
+          child: Slider(
+            value: _currentVolume,
+            min: 0.0,
+            max: 1.0,
+            divisions: 20,
+            label: '${(_currentVolume * 100).round()}%',
+            onChanged: (value) {
+              setState(() {
+                _currentVolume = value;
+              });
+              widget.onVolumeChanged(value);
+            },
+          ),
+        ),
+      ],
+    );
   }
 }

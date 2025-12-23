@@ -13,6 +13,8 @@ class ExportSettings {
   final int frameRate;
   final String videoPreset;
   final AudioSettings audioSettings;
+  final bool audioNormalizeEnabled;
+  final String audioNormalizeFilter;
 
   ExportSettings({
     this.outputPath = '',
@@ -22,6 +24,8 @@ class ExportSettings {
     this.frameRate = 30,
     this.videoPreset = 'medium',
     AudioSettings? audioSettings,
+    this.audioNormalizeEnabled = false,
+    this.audioNormalizeFilter = 'loudnorm=I=-16:TP=-1.5:LRA=11',
   }) : audioSettings = audioSettings ?? AudioSettings();
 
   factory ExportSettings.fromJson(Map<String, dynamic> json) =>
@@ -37,6 +41,8 @@ class ExportSettings {
     int? frameRate,
     String? videoPreset,
     AudioSettings? audioSettings,
+    bool? audioNormalizeEnabled,
+    String? audioNormalizeFilter,
   }) {
     return ExportSettings(
       outputPath: outputPath ?? this.outputPath,
@@ -46,6 +52,9 @@ class ExportSettings {
       frameRate: frameRate ?? this.frameRate,
       videoPreset: videoPreset ?? this.videoPreset,
       audioSettings: audioSettings ?? this.audioSettings,
+      audioNormalizeEnabled:
+          audioNormalizeEnabled ?? this.audioNormalizeEnabled,
+      audioNormalizeFilter: audioNormalizeFilter ?? this.audioNormalizeFilter,
     );
   }
 }

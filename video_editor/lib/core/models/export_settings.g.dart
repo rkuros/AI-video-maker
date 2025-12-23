@@ -23,6 +23,10 @@ ExportSettings _$ExportSettingsFromJson(
   audioSettings: json['audioSettings'] == null
       ? null
       : AudioSettings.fromJson(json['audioSettings'] as Map<String, dynamic>),
+  audioNormalizeEnabled: json['audioNormalizeEnabled'] as bool? ?? false,
+  audioNormalizeFilter:
+      json['audioNormalizeFilter'] as String? ??
+      'loudnorm=I=-16:TP=-1.5:LRA=11',
 );
 
 Map<String, dynamic> _$ExportSettingsToJson(ExportSettings instance) =>
@@ -34,6 +38,8 @@ Map<String, dynamic> _$ExportSettingsToJson(ExportSettings instance) =>
       'frameRate': instance.frameRate,
       'videoPreset': instance.videoPreset,
       'audioSettings': instance.audioSettings,
+      'audioNormalizeEnabled': instance.audioNormalizeEnabled,
+      'audioNormalizeFilter': instance.audioNormalizeFilter,
     };
 
 const _$VideoFormatEnumMap = {VideoFormat.mp4: 'mp4', VideoFormat.mov: 'mov'};

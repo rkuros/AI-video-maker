@@ -15,6 +15,7 @@ class Track {
   final List<Clip> clips;
   final bool isLocked;
   final bool isMuted;
+  final bool isVisible;
   final String name;
   final double volume; // 0.0 to 1.0
 
@@ -24,6 +25,7 @@ class Track {
     List<Clip>? clips,
     this.isLocked = false,
     this.isMuted = false,
+    this.isVisible = true,
     String? name,
     this.volume = 1.0,
   })  : id = id ?? _uuid.v4(),
@@ -45,6 +47,7 @@ class Track {
     List<Clip>? clips,
     bool? isLocked,
     bool? isMuted,
+    bool? isVisible,
     String? name,
     double? volume,
   }) {
@@ -54,6 +57,7 @@ class Track {
       clips: clips ?? List.from(this.clips),
       isLocked: isLocked ?? this.isLocked,
       isMuted: isMuted ?? this.isMuted,
+      isVisible: isVisible ?? this.isVisible,
       name: name ?? this.name,
       volume: volume ?? this.volume,
     );

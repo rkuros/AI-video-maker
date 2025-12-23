@@ -20,6 +20,7 @@ class Clip {
   final TransitionEffect? outTransition;
   final double volume; // 0.0 to 1.0
   final bool isMuted;
+  final bool isVisible;
 
   Clip({
     String? id,
@@ -33,6 +34,7 @@ class Clip {
     this.outTransition,
     this.volume = 1.0,
     this.isMuted = false,
+    this.isVisible = true,
   })  : id = id ?? _uuid.v4(),
         effects = effects ?? [];
 
@@ -54,6 +56,7 @@ class Clip {
     TransitionEffect? outTransition,
     double? volume,
     bool? isMuted,
+    bool? isVisible,
   }) {
     return Clip(
       id: id,
@@ -67,6 +70,7 @@ class Clip {
       outTransition: outTransition ?? this.outTransition,
       volume: volume ?? this.volume,
       isMuted: isMuted ?? this.isMuted,
+      isVisible: isVisible ?? this.isVisible,
     );
   }
 

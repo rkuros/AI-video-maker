@@ -8,6 +8,9 @@ import 'package:video_editor/core/models/denoise_level.dart';
 class VideoAnalysisService {
   static const _ffmpeg = 'ffmpeg';
   static const _ffprobe = 'ffprobe';
+  static const _analysisWidth = 320;
+  static const _analysisHeight = 180;
+  static const _motionDeltaSeconds = 0.25;
 
   /// Analyze video to determine characteristics for denoising
   Future<VideoAnalysisResult> analyzeVideo(String filePath) async {
@@ -19,35 +22,37 @@ class VideoAnalysisService {
       throw Exception('Invalid video duration');
     }
 
-    // Sample 3 frames: beginning (1s), middle, end (-1s)
-    final sampleTimes = [
-      1.0,
-      duration / 2,
-      max(1.0, duration - 1.0),
-    ];
+    // Sample a few frames across the timeline.
+    // Keep this small because each sample invokes ffmpeg.
+    final sampleTimes = _buildSampleTimes(duration);
 
     final frameStats = <_FrameStats>[];
     for (final time in sampleTimes) {
-      final stats = await _analyzeFrame(filePath, time);
+      final nextTime = min(duration - 0.1, time + _motionDeltaSeconds);
+      final stats = await _analyzeFrame(
+        filePath,
+        time,
+        nextTimestamp: nextTime,
+      );
       frameStats.add(stats);
     }
 
     // Calculate averages
-    final avgBrightness = frameStats
-        .map((s) => s.brightness)
-        .reduce((a, b) => a + b) / frameStats.length;
+    final avgBrightness =
+        frameStats.map((s) => s.brightness).reduce((a, b) => a + b) /
+        frameStats.length;
 
-    final avgNoiseLevel = frameStats
-        .map((s) => s.noiseLevel)
-        .reduce((a, b) => a + b) / frameStats.length;
+    final avgNoiseLevel =
+        frameStats.map((s) => s.noiseLevel).reduce((a, b) => a + b) /
+        frameStats.length;
 
-    final avgMotion = frameStats
-        .map((s) => s.motionEstimate)
-        .reduce((a, b) => a + b) / frameStats.length;
+    final avgMotion =
+        frameStats.map((s) => s.motionEstimate).reduce((a, b) => a + b) /
+        frameStats.length;
 
-    final avgComplexity = frameStats
-        .map((s) => s.complexity)
-        .reduce((a, b) => a + b) / frameStats.length;
+    final avgComplexity =
+        frameStats.map((s) => s.complexity).reduce((a, b) => a + b) /
+        frameStats.length;
 
     return VideoAnalysisResult(
       averageBrightness: avgBrightness,
@@ -62,63 +67,107 @@ class VideoAnalysisService {
 
   /// Recommend denoise settings based on analysis result
   DenoiseSettings recommendSettings(VideoAnalysisResult analysis) {
-    // Determine denoise level based on darkness and noise
-    DenoiseLevel level;
+    // Keep recommendations in the "simple UI" band: Fast/Balanced/High.
+    // (Avoid recommending Maximum/AI Enhanced because those imply very slow filters/export-only flows.)
+    final brightness = analysis.averageBrightness.clamp(0.0, 1.0).toDouble();
+    final noise = analysis.noiseLevel.clamp(0.0, 1.0).toDouble();
+    final motion = analysis.motionLevel.clamp(0.0, 1.0).toDouble();
 
-    if (analysis.isVeryDarkVideo && analysis.isNoisyVideo) {
-      // Very dark and noisy - need maximum denoising
-      level = DenoiseLevel.maximum;
-    } else if (analysis.isDarkVideo && analysis.isNoisyVideo) {
-      // Dark and noisy - need high denoising
+    DenoiseLevel level;
+    if (noise > 0.60 || (brightness < 0.20 && noise > 0.45)) {
       level = DenoiseLevel.high;
-    } else if (analysis.isDarkVideo || analysis.isNoisyVideo) {
-      // Either dark or noisy - balanced denoising
+    } else if (noise > 0.35 || brightness < 0.30) {
       level = DenoiseLevel.balanced;
     } else {
-      // Not particularly dark or noisy - light denoising
       level = DenoiseLevel.fast;
     }
 
-    // Calculate strength based on noise level
-    final strength = (analysis.noiseLevel * 0.8 + 0.2).clamp(0.0, 1.0);
+    // Strength: start gentle to preserve detail, scale with estimated noise.
+    final strength = (0.15 + noise * 0.75).clamp(0.0, 0.9).toDouble();
 
-    // Temporal radius based on motion level (less motion = more temporal filtering)
-    final temporalRadius = (5 - (analysis.motionLevel * 3)).round().clamp(1, 5);
+    // Temporal radius: more motion => less temporal smoothing (reduce ghosting).
+    final temporalRadius = (4.5 - motion * 3.0).round().clamp(1, 5);
 
-    // Luma strength based on brightness (darker = more luma denoising)
-    final lumaStrength = (1.0 - analysis.averageBrightness * 0.5).clamp(0.5, 1.0);
-
-    // Chroma strength based on noise level
-    final chromaStrength = (analysis.noiseLevel * 0.8 + 0.3).clamp(0.3, 1.0);
+    // Luma/chroma: bias luma more for dark footage and chroma more for high noise.
+    final lumaStrength = (0.55 + (1.0 - brightness) * 0.45)
+        .clamp(0.5, 1.0)
+        .toDouble();
+    final chromaStrength = (0.35 + noise * 0.65).clamp(0.3, 1.0).toDouble();
 
     // Determine which filters to use based on level
-    final useNlmeans = level.index >= DenoiseLevel.balanced.index;
-    final useBm3d = level.index >= DenoiseLevel.high.index;
-    final useVaguedenoiser = level == DenoiseLevel.maximum;
+    // CRITICAL: nlmeans and bm3d are EXTREMELY slow (CPU-only, no GPU/NPU support)
+    // For practical use, we ONLY use hqdn3d (fast, temporal+spatial, good quality)
+    // - fast: light hqdn3d settings (real-time capable)
+    // - balanced: moderate hqdn3d settings
+    // - high: strong hqdn3d settings
+    // - maximum: very strong hqdn3d settings
+    final useNlmeans = false; // Disabled - too slow (0.3fps)
+    final useBm3d = false; // Disabled - extremely slow
+    final useVaguedenoiser = false; // Disabled - not worth the cost
+    final useDctdnoiz = false; // Disabled - not worth the cost
 
-    // nlmeans strength based on noise level
-    final nlmeansStrength = (analysis.noiseLevel * 0.9 + 0.3).clamp(0.3, 1.0);
-
-    // bm3d sigma based on noise level (higher noise = higher sigma)
-    final bm3dSigma = (analysis.noiseLevel * 10 + 2).clamp(2.0, 12.0);
+    // Adjust hqdn3d strength based on level for practical performance
+    final levelFactor = switch (level) {
+      DenoiseLevel.fast => 0.85,
+      DenoiseLevel.balanced => 1.00,
+      DenoiseLevel.high => 1.15,
+      _ => 1.00,
+    };
+    final adjustedLumaStrength = (lumaStrength * levelFactor)
+        .clamp(0.5, 1.0)
+        .toDouble();
+    final adjustedChromaStrength = (chromaStrength * levelFactor)
+        .clamp(0.3, 1.0)
+        .toDouble();
+    final adjustedTemporalRadius = min(
+      5,
+      temporalRadius + (level == DenoiseLevel.high ? 1 : 0),
+    ).clamp(1, 5).toInt();
 
     return DenoiseSettings(
       strength: strength,
-      temporalRadius: temporalRadius,
-      lumaStrength: lumaStrength,
-      chromaStrength: chromaStrength,
+      temporalRadius: adjustedTemporalRadius,
+      lumaStrength: adjustedLumaStrength,
+      chromaStrength: adjustedChromaStrength,
       preserveDetails: true,
       level: level,
       useNlmeans: useNlmeans,
       useBm3d: useBm3d,
       useVaguedenoiser: useVaguedenoiser,
-      useDctdnoiz: false,
+      useDctdnoiz: useDctdnoiz,
       useAiModel: false,
-      nlmeansStrength: nlmeansStrength,
-      nlmeansPatchSize: 7,
-      nlmeansResearchSize: 15,
-      bm3dSigma: bm3dSigma,
+      nlmeansStrength: 0.5, // Unused but needs a value
+      nlmeansPatchSize: 5, // Unused but needs a value
+      nlmeansResearchSize: 11, // Unused but needs a value
+      bm3dSigma: 3.0, // Unused but needs a value
     );
+  }
+
+  List<double> _buildSampleTimes(double duration) {
+    final safeStart = min(1.0, max(0.0, duration * 0.1)).toDouble();
+    final safeEnd = max(0.1, duration - 1.0).toDouble();
+
+    final candidates = <double>[
+      safeStart,
+      duration * 0.25,
+      duration * 0.50,
+      duration * 0.75,
+      safeEnd,
+    ].map((t) => t.clamp(0.0, max(0.0, duration - 0.1)).toDouble()).toList();
+
+    // De-dup and keep stable ordering for very short clips.
+    final unique = <double>[];
+    for (final t in candidates) {
+      if (unique.any((u) => (u - t).abs() < 0.01)) continue;
+      unique.add(t);
+    }
+
+    // For short clips, 3 samples is enough.
+    if (duration < 4.0 && unique.length > 3) {
+      return [unique.first, unique[unique.length ~/ 2], unique.last];
+    }
+
+    return unique;
   }
 
   Future<Map<String, dynamic>> _getVideoMetadata(String filePath) async {
@@ -144,9 +193,44 @@ class VideoAnalysisService {
     return {'duration': duration};
   }
 
-  Future<_FrameStats> _analyzeFrame(String filePath, double timestamp) async {
-    // Extract frame as raw pixel data
-    final process = await Process.start(_ffmpeg, [
+  Future<_FrameStats> _analyzeFrame(
+    String filePath,
+    double timestamp, {
+    required double nextTimestamp,
+  }) async {
+    final bytes = await _extractGrayFrameBytes(filePath, timestamp);
+    if (bytes == null || bytes.isEmpty) {
+      return _FrameStats(
+        brightness: 0.5,
+        noiseLevel: 0.3,
+        motionEstimate: 0.5,
+        complexity: 0.5,
+      );
+    }
+
+    final nextBytes = await _extractGrayFrameBytes(filePath, nextTimestamp);
+
+    final brightness = _estimateBrightness(bytes);
+    final complexity = _estimateComplexity(bytes);
+    final noiseLevel = _estimateNoise(bytes);
+    final motionEstimate = nextBytes == null
+        ? complexity
+        : _estimateMotion(bytes, nextBytes);
+
+    return _FrameStats(
+      brightness: brightness,
+      noiseLevel: noiseLevel,
+      motionEstimate: motionEstimate,
+      complexity: complexity,
+    );
+  }
+
+  Future<List<int>?> _extractGrayFrameBytes(
+    String filePath,
+    double timestamp,
+  ) async {
+    final baseArgs = <String>[
+      if (Platform.isMacOS) ...['-hwaccel', 'videotoolbox'],
       '-ss',
       timestamp.toStringAsFixed(3),
       '-i',
@@ -158,60 +242,109 @@ class VideoAnalysisService {
       '-pix_fmt',
       'gray',
       '-s',
-      '320x180', // Small size for fast analysis
+      '${_analysisWidth}x$_analysisHeight',
       '-',
-    ]);
+    ];
 
-    final bytes = <int>[];
-    await process.stdout.forEach(bytes.addAll);
-    await process.stderr.drain();
-    final exitCode = await process.exitCode;
-
-    if (exitCode != 0 || bytes.isEmpty) {
-      // If frame extraction fails, return default stats
-      return _FrameStats(
-        brightness: 0.5,
-        noiseLevel: 0.3,
-        motionEstimate: 0.5,
-        complexity: 0.5,
+    Future<ProcessResult> run(List<String> args) {
+      return Process.run(
+        _ffmpeg,
+        args,
+        stdoutEncoding: null,
+        stderrEncoding: null,
       );
     }
 
-    // Calculate brightness (average pixel value)
-    final sum = bytes.reduce((a, b) => a + b);
-    final brightness = (sum / bytes.length) / 255.0;
-
-    // Calculate noise level (standard deviation as proxy for noise)
-    final mean = sum / bytes.length;
-    var variance = 0.0;
-    for (final byte in bytes) {
-      final diff = byte - mean;
-      variance += diff * diff;
+    var result = await run(baseArgs);
+    if (result.exitCode != 0 && Platform.isMacOS) {
+      final fallbackArgs = baseArgs
+          .where((a) => a != 'videotoolbox' && a != '-hwaccel')
+          .toList();
+      result = await run(fallbackArgs);
     }
-    variance /= bytes.length;
-    final stdDev = sqrt(variance);
-    final noiseLevel = (stdDev / 128.0).clamp(0.0, 1.0);
 
-    // Calculate complexity (high frequency content)
+    if (result.exitCode != 0 || result.stdout is! List<int>) {
+      return null;
+    }
+
+    final bytes = result.stdout as List<int>;
+    if (bytes.length != _analysisWidth * _analysisHeight) return null;
+    return bytes;
+  }
+
+  double _estimateBrightness(List<int> bytes) {
+    var sum = 0;
+    for (final b in bytes) {
+      sum += b;
+    }
+    return (sum / bytes.length) / 255.0;
+  }
+
+  double _estimateComplexity(List<int> bytes) {
     var edgeSum = 0.0;
-    const width = 320;
+    const width = _analysisWidth;
     for (var i = 0; i < bytes.length - width - 1; i++) {
       final hDiff = (bytes[i + 1] - bytes[i]).abs();
       final vDiff = (bytes[i + width] - bytes[i]).abs();
       edgeSum += hDiff + vDiff;
     }
-    final complexity = (edgeSum / (bytes.length * 255 * 2)).clamp(0.0, 1.0);
+    return (edgeSum / (bytes.length * 255 * 2)).clamp(0.0, 1.0);
+  }
 
-    // Motion estimate (for now, use complexity as proxy)
-    // In future, could compare consecutive frames
-    final motionEstimate = complexity;
+  double _estimateNoise(List<int> bytes) {
+    // Estimate noise as the standard deviation of high-frequency residual.
+    // This avoids interpreting edges/texture as "noise" as much as raw stddev does.
+    const width = _analysisWidth;
+    const height = _analysisHeight;
 
-    return _FrameStats(
-      brightness: brightness,
-      noiseLevel: noiseLevel,
-      motionEstimate: motionEstimate,
-      complexity: complexity,
-    );
+    var sumResidual = 0.0;
+    var sumResidualSq = 0.0;
+    var count = 0;
+
+    for (var y = 1; y < height - 1; y++) {
+      final row = y * width;
+      for (var x = 1; x < width - 1; x++) {
+        final idx = row + x;
+
+        // 3x3 box blur mean (integer math to keep it cheap).
+        var localSum = 0;
+        localSum += bytes[idx - width - 1];
+        localSum += bytes[idx - width];
+        localSum += bytes[idx - width + 1];
+        localSum += bytes[idx - 1];
+        localSum += bytes[idx];
+        localSum += bytes[idx + 1];
+        localSum += bytes[idx + width - 1];
+        localSum += bytes[idx + width];
+        localSum += bytes[idx + width + 1];
+        final localMean = localSum / 9.0;
+
+        final residual = bytes[idx] - localMean;
+        sumResidual += residual;
+        sumResidualSq += residual * residual;
+        count++;
+      }
+    }
+
+    if (count <= 0) return 0.0;
+
+    final mean = sumResidual / count;
+    final variance = max(0.0, (sumResidualSq / count) - (mean * mean));
+    final stdDev = sqrt(variance);
+
+    // Empirical scaling: residual stddev of ~20-30 corresponds to moderate noise.
+    return (stdDev / 50.0).clamp(0.0, 1.0);
+  }
+
+  double _estimateMotion(List<int> a, List<int> b) {
+    final len = min(a.length, b.length);
+    if (len == 0) return 0.0;
+
+    var diffSum = 0.0;
+    for (var i = 0; i < len; i++) {
+      diffSum += (a[i] - b[i]).abs();
+    }
+    return (diffSum / (len * 255.0)).clamp(0.0, 1.0);
   }
 }
 

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:video_player/video_player.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:video_editor/core/logic/preview_provider.dart';
 import 'package:video_editor/core/logic/timeline_provider.dart';
 import 'package:video_editor/core/logic/media_library_provider.dart';
@@ -39,46 +39,66 @@ class PreviewPanel extends ConsumerWidget {
       return _buildLoadingDisplay();
     }
 
-    if (state.controller == null || !state.controller!.value.isInitialized) {
+    if (state.videoController == null || state.player == null) {
       return _buildEmptyDisplay();
     }
 
     return Stack(
       children: [
         Center(
-          child: AspectRatio(
-            aspectRatio: state.controller!.value.aspectRatio,
-            child: VideoPlayer(state.controller!),
-          ),
-        ),
-        // Effect preview badge
-        if (state.isEffectPreview)
-          Positioned(
-            top: 16,
-            right: 16,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.blue.withValues(alpha: 0.9),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.auto_fix_high, size: 16, color: Colors.white),
-                  SizedBox(width: 4),
-                  Text(
-                    'Effect Preview',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
+          child: state.isEffectPreview &&
+                  state.compareVideoController != null &&
+                  state.effectOriginalPath != null
+              ? Row(
+                  children: [
+                    Expanded(
+                      child: _buildLabeledVideo(
+                        controller: state.compareVideoController!,
+                        label: 'Before',
+                      ),
                     ),
-                  ),
-                ],
+                    Expanded(
+                      child: _buildLabeledVideo(
+                        controller: state.videoController!,
+                        label: 'After',
+                      ),
+                    ),
+                  ],
+                )
+              : Video(controller: state.videoController!),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLabeledVideo({
+    required VideoController controller,
+    required String label,
+  }) {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: Video(controller: controller),
+        ),
+        Positioned(
+          top: 12,
+          left: 12,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
               ),
             ),
           ),
+        ),
       ],
     );
   }
@@ -170,8 +190,9 @@ class PreviewPanel extends ConsumerWidget {
     WidgetRef ref,
     PreviewState state,
   ) {
-    final hasVideo =
-        state.controller != null && state.controller!.value.isInitialized;
+    final hasVideo = state.player != null &&
+        state.videoController != null &&
+        state.currentVideoPath != null;
 
     return Container(
       color: Colors.grey[900],
@@ -300,8 +321,9 @@ class PreviewPanel extends ConsumerWidget {
   }
 
   Widget _buildProgressBar(WidgetRef ref, PreviewState state) {
-    final hasVideo =
-        state.controller != null && state.controller!.value.isInitialized;
+    final hasVideo = state.player != null &&
+        state.videoController != null &&
+        state.currentVideoPath != null;
     final progress = hasVideo && state.duration.inMilliseconds > 0
         ? state.currentPosition.inMilliseconds / state.duration.inMilliseconds
         : 0.0;
@@ -400,8 +422,9 @@ class PreviewPanel extends ConsumerWidget {
     // Check if we need to regenerate timeline preview
     if (timeline.tracks.isNotEmpty &&
         timeline.duration != Duration.zero &&
-        (previewState.timelinePreviewPath == null ||
-         previewState.currentVideoPath != previewState.timelinePreviewPath)) {
+        (!previewState.isTimelineStreaming ||
+            previewState.timelinePreviewPath == null ||
+            previewState.currentVideoPath != previewState.timelinePreviewPath)) {
       // Show loading dialog with progress
       PreviewLoadingDialog.show(
         context,
@@ -412,19 +435,19 @@ class PreviewPanel extends ConsumerWidget {
         ),
       ).then((success) {
         if (!context.mounted || !success) return;
-        previewNotifier.seekTo(timeline.currentPosition);
         previewNotifier.togglePlayPause();
       });
       return;
     }
 
     // If already playing, pause. Otherwise check if we have a valid video
-    if (!previewState.isPlaying) {
-      previewNotifier.seekTo(timeline.currentPosition);
-    } else {
+    if (previewState.isPlaying) {
       // When pausing, sync timeline position with preview position
       final timelineNotifier = ref.read(timelineProvider.notifier);
-      timelineNotifier.setCurrentPosition(previewState.currentPosition);
+      final timelinePosition = previewState.isTimelineStreaming
+          ? previewState.timelineStreamStartOffset + previewState.currentPosition
+          : previewState.currentPosition;
+      timelineNotifier.setCurrentPosition(timelinePosition);
     }
 
     previewNotifier.togglePlayPause();

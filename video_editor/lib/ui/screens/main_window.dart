@@ -8,12 +8,13 @@ import 'package:video_editor/ui/panels/properties_panel.dart';
 import 'package:video_editor/ui/widgets/keyboard_shortcuts_help.dart';
 import 'package:video_editor/core/logic/selection_provider.dart';
 import 'package:video_editor/core/logic/project_provider.dart';
+import 'package:video_editor/core/logic/preview_provider.dart';
 import 'package:video_editor/core/services/keyboard_shortcut_service.dart';
 import 'package:video_editor/core/engines/export_engine.dart';
-import 'package:video_editor/core/models/export_settings.dart';
-import 'package:video_editor/core/models/enums.dart';
+import 'package:video_editor/core/models/models.dart';
 import 'package:video_editor/core/logic/timeline_provider.dart';
 import 'package:video_editor/core/logic/media_library_provider.dart';
+import 'package:video_editor/core/logic/clip_clipboard_provider.dart';
 import 'package:video_editor/ui/dialogs/project_settings_dialog.dart';
 import 'package:video_editor/ui/dialogs/initialize_project_dialog.dart';
 import 'package:flutter/services.dart';
@@ -29,88 +30,90 @@ class MainWindow extends ConsumerStatefulWidget {
 class _MainWindowState extends ConsumerState<MainWindow> {
   final _shortcutService = KeyboardShortcutService();
   final _exportEngine = ExportEngine();
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Focus(
-      autofocus: true,
-      onKeyEvent: _handleKeyEvent,
-      child: Scaffold(
-      appBar: AppBar(
-        title: _buildTitle(),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.add),
-            onPressed: _createNewProject,
-            tooltip: 'New Project',
+    return GestureDetector(
+      onTap: () {
+        // Request focus when clicking anywhere in the window
+        _focusNode.requestFocus();
+      },
+      child: Focus(
+        focusNode: _focusNode,
+        autofocus: true,
+        onKeyEvent: _handleKeyEvent,
+        child: Scaffold(
+          appBar: AppBar(
+            title: _buildTitle(),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.add),
+                onPressed: _createNewProject,
+                tooltip: 'New Project',
+              ),
+              IconButton(
+                icon: const Icon(Icons.folder_open),
+                onPressed: _openProject,
+                tooltip: 'Open Project',
+              ),
+              IconButton(
+                icon: const Icon(Icons.save),
+                onPressed: _saveProject,
+                tooltip: 'Save Project',
+              ),
+              IconButton(
+                icon: const Icon(Icons.save_as),
+                onPressed: _saveProjectAs,
+                tooltip: 'Save Project As',
+              ),
+              const VerticalDivider(),
+              IconButton(
+                icon: const Icon(Icons.settings),
+                onPressed: _openProjectSettings,
+                tooltip: 'Project Settings',
+              ),
+              const VerticalDivider(),
+              IconButton(
+                icon: const Icon(Icons.file_download),
+                onPressed: _exportVideo,
+                tooltip: 'Export Video',
+              ),
+              const VerticalDivider(),
+              IconButton(
+                icon: const Icon(Icons.help_outline),
+                onPressed: _showKeyboardShortcuts,
+                tooltip: 'Keyboard Shortcuts',
+              ),
+            ],
           ),
-          IconButton(
-            icon: const Icon(Icons.folder_open),
-            onPressed: _openProject,
-            tooltip: 'Open Project',
-          ),
-          IconButton(
-            icon: const Icon(Icons.save),
-            onPressed: _saveProject,
-            tooltip: 'Save Project',
-          ),
-          IconButton(
-            icon: const Icon(Icons.save_as),
-            onPressed: _saveProjectAs,
-            tooltip: 'Save Project As',
-          ),
-          const VerticalDivider(),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: _openProjectSettings,
-            tooltip: 'Project Settings',
-          ),
-          const VerticalDivider(),
-          IconButton(
-            icon: const Icon(Icons.file_download),
-            onPressed: _exportVideo,
-            tooltip: 'Export Video',
-          ),
-          const VerticalDivider(),
-          IconButton(
-            icon: const Icon(Icons.help_outline),
-            onPressed: _showKeyboardShortcuts,
-            tooltip: 'Keyboard Shortcuts',
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          // Top section with preview and media library
-          Expanded(
-            flex: 2,
-            child: Row(
-              children: [
-                // Media library panel (left side)
-                Expanded(
-                  flex: 1,
-                  child: _buildMediaLibraryPanel(),
+          body: Column(
+            children: [
+              // Top section with preview and media library
+              Expanded(
+                flex: 2,
+                child: Row(
+                  children: [
+                    // Media library panel (left side)
+                    Expanded(flex: 1, child: _buildMediaLibraryPanel()),
+                    // Preview panel (center)
+                    Expanded(flex: 2, child: _buildPreviewPanel()),
+                    // Properties panel (right side)
+                    Expanded(flex: 1, child: _buildPropertiesPanel()),
+                  ],
                 ),
-                // Preview panel (center)
-                Expanded(
-                  flex: 2,
-                  child: _buildPreviewPanel(),
-                ),
-                // Properties panel (right side)
-                Expanded(
-                  flex: 1,
-                  child: _buildPropertiesPanel(),
-                ),
-              ],
-            ),
+              ),
+              // Timeline panel (bottom)
+              Expanded(flex: 1, child: _buildTimelinePanel()),
+            ],
           ),
-          // Timeline panel (bottom)
-          Expanded(
-            flex: 1,
-            child: _buildTimelinePanel(),
-          ),
-        ],
-      ),
+        ),
       ),
     );
   }
@@ -199,10 +202,7 @@ class _MainWindowState extends ConsumerState<MainWindow> {
 
     return Row(
       mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(title),
-        if (settingsInfo != null) settingsInfo,
-      ],
+      children: [Text(title), if (settingsInfo != null) settingsInfo],
     );
   }
 
@@ -276,10 +276,7 @@ class _MainWindowState extends ConsumerState<MainWindow> {
                   ),
                 ),
                 items: const [24, 30, 60].map((fps) {
-                  return DropdownMenuItem(
-                    value: fps,
-                    child: Text('$fps FPS'),
-                  );
+                  return DropdownMenuItem(value: fps, child: Text('$fps FPS'));
                 }).toList(),
                 onChanged: (value) {
                   if (value != null) {
@@ -345,12 +342,14 @@ class _MainWindowState extends ConsumerState<MainWindow> {
     );
 
     if (result != null && result['name'].isNotEmpty) {
-      ref.read(projectProvider.notifier).createNewProject(
-        result['name'],
-        resolution: result['resolution'],
-        frameRate: result['frameRate'],
-        maxDuration: result['maxDuration'],
-      );
+      ref
+          .read(projectProvider.notifier)
+          .createNewProject(
+            result['name'],
+            resolution: result['resolution'],
+            frameRate: result['frameRate'],
+            maxDuration: result['maxDuration'],
+          );
     }
   }
 
@@ -361,14 +360,16 @@ class _MainWindowState extends ConsumerState<MainWindow> {
     );
 
     if (result != null && result.files.single.path != null) {
-      await ref.read(projectProvider.notifier).loadProject(result.files.single.path!);
+      await ref
+          .read(projectProvider.notifier)
+          .loadProject(result.files.single.path!);
 
       if (mounted) {
         final error = ref.read(projectProvider).error;
         if (error != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(error)),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(error)));
         }
       }
     }
@@ -379,9 +380,9 @@ class _MainWindowState extends ConsumerState<MainWindow> {
 
     // Check if project needs initialization
     if (!projectState.hasProject) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('保存するプロジェクトがありません')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('保存するプロジェクトがありません')));
       return;
     }
 
@@ -400,12 +401,14 @@ class _MainWindowState extends ConsumerState<MainWindow> {
       if (result == null || !mounted) return;
 
       // Update project with new settings (keeps timeline and media library)
-      ref.read(projectProvider.notifier).updateProjectSettings(
-        name: result['name'],
-        resolution: result['resolution'],
-        frameRate: result['frameRate'],
-        maxDuration: result['maxDuration'],
-      );
+      ref
+          .read(projectProvider.notifier)
+          .updateProjectSettings(
+            name: result['name'],
+            resolution: result['resolution'],
+            frameRate: result['frameRate'],
+            maxDuration: result['maxDuration'],
+          );
     }
 
     // Save the project
@@ -414,13 +417,13 @@ class _MainWindowState extends ConsumerState<MainWindow> {
     if (mounted) {
       final error = ref.read(projectProvider).error;
       if (error != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(error)),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error)));
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('プロジェクトを保存しました')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('プロジェクトを保存しました')));
       }
     }
   }
@@ -443,24 +446,28 @@ class _MainWindowState extends ConsumerState<MainWindow> {
 
     // If no project exists, create one with the settings
     if (!projectState.hasProject) {
-      ref.read(projectProvider.notifier).createNewProject(
-        settings['name'],
-        resolution: settings['resolution'],
-        frameRate: settings['frameRate'],
-        maxDuration: settings['maxDuration'],
-      );
+      ref
+          .read(projectProvider.notifier)
+          .createNewProject(
+            settings['name'],
+            resolution: settings['resolution'],
+            frameRate: settings['frameRate'],
+            maxDuration: settings['maxDuration'],
+          );
 
       // Restore timeline and media library
       ref.read(timelineProvider.notifier).loadTimeline(currentTimeline);
       ref.read(mediaLibraryProvider.notifier).loadItems(currentMediaLibrary);
     } else {
       // Update existing project with new settings
-      ref.read(projectProvider.notifier).updateProjectSettings(
-        name: settings['name'],
-        resolution: settings['resolution'],
-        frameRate: settings['frameRate'],
-        maxDuration: settings['maxDuration'],
-      );
+      ref
+          .read(projectProvider.notifier)
+          .updateProjectSettings(
+            name: settings['name'],
+            resolution: settings['resolution'],
+            frameRate: settings['frameRate'],
+            maxDuration: settings['maxDuration'],
+          );
     }
 
     // Now ask for save location
@@ -475,13 +482,13 @@ class _MainWindowState extends ConsumerState<MainWindow> {
       if (mounted) {
         final error = ref.read(projectProvider).error;
         if (error != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(error)),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(error)));
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('プロジェクトを保存しました')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('プロジェクトを保存しました')));
         }
       }
     }
@@ -490,9 +497,9 @@ class _MainWindowState extends ConsumerState<MainWindow> {
   Future<void> _openProjectSettings() async {
     final projectState = ref.read(projectProvider);
     if (!projectState.hasProject) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No project open')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No project open')));
       return;
     }
 
@@ -505,11 +512,13 @@ class _MainWindowState extends ConsumerState<MainWindow> {
     );
 
     if (result != null) {
-      ref.read(projectProvider.notifier).updateProjectSettings(
-        resolution: result['resolution'],
-        frameRate: result['frameRate'],
-        maxDuration: result['maxDuration'],
-      );
+      ref
+          .read(projectProvider.notifier)
+          .updateProjectSettings(
+            resolution: result['resolution'],
+            frameRate: result['frameRate'],
+            maxDuration: result['maxDuration'],
+          );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -528,7 +537,18 @@ class _MainWindowState extends ConsumerState<MainWindow> {
       final focusContext = FocusManager.instance.primaryFocus?.context;
       return focusContext != null &&
           (focusContext.widget is EditableText ||
-              focusContext.findAncestorWidgetOfExactType<EditableText>() != null);
+              focusContext.findAncestorWidgetOfExactType<EditableText>() !=
+                  null);
+    }
+
+    Duration effectiveTimelinePosition() {
+      final timeline = ref.read(timelineProvider);
+      final previewState = ref.read(previewProvider);
+      if (!previewState.isPlaying) return timeline.currentPosition;
+      if (!previewState.isTimelineStreaming)
+        return previewState.currentPosition;
+      return previewState.timelineStreamStartOffset +
+          previewState.currentPosition;
     }
 
     // Undo / Redo (Cmd+Z / Cmd+Shift+Z)
@@ -543,15 +563,143 @@ class _MainWindowState extends ConsumerState<MainWindow> {
       return KeyEventResult.handled;
     }
 
+    // Copy selected clip (timeline)
+    if (_shortcutService.isCopy(event)) {
+      if (isEditingText()) return KeyEventResult.ignored;
+
+      final selection = ref.read(selectionProvider);
+      final clipId = selection.selectedClipId;
+      final trackId = selection.selectedTrackId;
+      if (clipId == null || trackId == null) return KeyEventResult.ignored;
+
+      final timeline = ref.read(timelineProvider);
+      final clip = timeline.findClip(clipId);
+      if (clip == null) return KeyEventResult.ignored;
+
+      ref.read(clipClipboardProvider.notifier).state = ClipClipboardEntry(
+        clip: clip,
+        sourceTrackId: trackId,
+      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Clip copied')));
+      return KeyEventResult.handled;
+    }
+
+    // Cut selected clip (timeline): copy + delete
+    if (_shortcutService.isCut(event)) {
+      if (isEditingText()) return KeyEventResult.ignored;
+
+      final selection = ref.read(selectionProvider);
+      final clipId = selection.selectedClipId;
+      final trackId = selection.selectedTrackId;
+      if (clipId == null || trackId == null) return KeyEventResult.ignored;
+
+      final timeline = ref.read(timelineProvider);
+      final clip = timeline.findClip(clipId);
+      if (clip == null) return KeyEventResult.ignored;
+
+      ref.read(clipClipboardProvider.notifier).state = ClipClipboardEntry(
+        clip: clip,
+        sourceTrackId: trackId,
+      );
+      ref.read(timelineProvider.notifier).removeClip(trackId, clipId);
+      ref.read(selectionProvider.notifier).clearSelection();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Clip cut')));
+      return KeyEventResult.handled;
+    }
+
+    // Paste clip (timeline)
+    if (_shortcutService.isPaste(event)) {
+      if (isEditingText()) return KeyEventResult.ignored;
+
+      final clipboard = ref.read(clipClipboardProvider);
+      if (clipboard == null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Nothing to paste')));
+        return KeyEventResult.handled;
+      }
+
+      final selection = ref.read(selectionProvider);
+      final timeline = ref.read(timelineProvider);
+
+      // Try to find target track
+      String? targetTrackId = selection.selectedTrackId;
+      Track? targetTrack = targetTrackId != null ? timeline.getTrack(targetTrackId) : null;
+
+      // If no track selected or track not found, try the original source track
+      if (targetTrack == null) {
+        targetTrack = timeline.getTrack(clipboard.sourceTrackId);
+      }
+
+      // If still not found, find first unlocked track of compatible type
+      if (targetTrack == null) {
+        // Determine clip type from mediaItem
+        final mediaLibrary = ref.read(mediaLibraryProvider);
+        final mediaItem = mediaLibrary
+            .where((item) => item.id == clipboard.clip.mediaItemId)
+            .firstOrNull;
+
+        if (mediaItem != null) {
+          final isVideo = mediaItem.type == MediaType.video;
+          final compatibleTracks = isVideo
+              ? timeline.videoTracks
+              : timeline.audioTracks;
+
+          targetTrack = compatibleTracks.where((t) => !t.isLocked).firstOrNull;
+
+          // If no compatible unlocked track exists, create one
+          if (targetTrack == null) {
+            final trackType = isVideo ? TrackType.video : TrackType.audio;
+            final trackName = isVideo ? 'Video Track' : 'Audio Track';
+            ref.read(timelineProvider.notifier).addTrack(trackType, name: trackName);
+
+            // Get the newly created track
+            final updatedTimeline = ref.read(timelineProvider);
+            final tracks = isVideo ? updatedTimeline.videoTracks : updatedTimeline.audioTracks;
+            targetTrack = tracks.lastOrNull;
+          }
+        }
+      }
+
+      if (targetTrack == null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Cannot paste: no compatible track')));
+        return KeyEventResult.handled;
+      }
+
+      if (targetTrack.isLocked) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Track is locked')));
+        return KeyEventResult.handled;
+      }
+
+      targetTrackId = targetTrack.id;
+
+      final newClip = clipboard.materializeAt(effectiveTimelinePosition());
+      ref.read(timelineProvider.notifier).addClip(targetTrackId, newClip);
+      ref
+          .read(selectionProvider.notifier)
+          .selectClip(newClip.id, targetTrackId);
+      return KeyEventResult.handled;
+    }
+
     // Delete selected clip (timeline)
     final key = event.logicalKey;
-    if (key == LogicalKeyboardKey.delete || key == LogicalKeyboardKey.backspace) {
+    if (key == LogicalKeyboardKey.delete ||
+        key == LogicalKeyboardKey.backspace) {
       if (isEditingText()) {
         return KeyEventResult.ignored;
       }
 
       final selection = ref.read(selectionProvider);
-      if (selection.selectedClipId != null && selection.selectedTrackId != null) {
+      if (selection.selectedClipId != null &&
+          selection.selectedTrackId != null) {
         ref
             .read(timelineProvider.notifier)
             .removeClip(selection.selectedTrackId!, selection.selectedClipId!);
@@ -598,6 +746,66 @@ class _MainWindowState extends ConsumerState<MainWindow> {
       return;
     }
 
+    // Check if project needs initialization before export
+    final projectState = ref.read(projectProvider);
+
+    // Save current timeline and media library in case we need to create a new project
+    final currentTimeline = ref.read(timelineProvider);
+    final currentMediaLibrary = ref.read(mediaLibraryProvider);
+
+    // If no project exists or project has default/empty name, show initialization dialog
+    if (!projectState.hasProject ||
+        projectState.project!.name.isEmpty ||
+        projectState.project!.name.toLowerCase() == 'untitled' ||
+        projectState.project!.name.toLowerCase() == 'new project') {
+      // Show initialization dialog
+      final settings = await showDialog<Map<String, dynamic>>(
+        context: context,
+        builder: (context) => const InitializeProjectDialog(),
+      );
+
+      if (settings == null || !mounted) return;
+
+      // Create or update project with settings
+      if (!projectState.hasProject) {
+        ref
+            .read(projectProvider.notifier)
+            .createNewProject(
+              settings['name'],
+              resolution: settings['resolution'],
+              frameRate: settings['frameRate'],
+              maxDuration: settings['maxDuration'],
+            );
+
+        // Restore timeline and media library
+        ref.read(timelineProvider.notifier).loadTimeline(currentTimeline);
+        ref.read(mediaLibraryProvider.notifier).loadItems(currentMediaLibrary);
+      } else {
+        // Update existing project with new settings
+        ref
+            .read(projectProvider.notifier)
+            .updateProjectSettings(
+              name: settings['name'],
+              resolution: settings['resolution'],
+              frameRate: settings['frameRate'],
+              maxDuration: settings['maxDuration'],
+            );
+      }
+
+      // Save the project
+      await ref.read(projectProvider.notifier).saveProject();
+
+      if (!mounted) return;
+
+      final error = ref.read(projectProvider).error;
+      if (error != null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('プロジェクトの保存に失敗しました: $error')));
+        return;
+      }
+    }
+
     final projectName = ref.read(projectProvider).project?.name ?? 'project';
     final outputPath = await FilePicker.platform.saveFile(
       dialogTitle: 'Export Video',
@@ -613,8 +821,9 @@ class _MainWindowState extends ConsumerState<MainWindow> {
         ? VideoFormat.mov
         : VideoFormat.mp4;
 
-    final projectState = ref.read(projectProvider);
-    final defaultSettings = projectState.project?.defaultExportSettings;
+    final updatedProjectState = ref.read(projectProvider);
+    final defaultSettings = updatedProjectState.project?.defaultExportSettings;
+    final previewState = ref.read(previewProvider);
 
     final settings = ExportSettings(
       outputPath: outputPath,
@@ -622,6 +831,8 @@ class _MainWindowState extends ConsumerState<MainWindow> {
       resolution: defaultSettings?.resolution ?? Resolution.r1080p,
       quality: Quality.high,
       frameRate: defaultSettings?.frameRate ?? 30,
+      audioNormalizeEnabled: previewState.audioNormalizeEnabled,
+      audioNormalizeFilter: previewState.audioNormalizeFilter,
     );
 
     ExportProgress? currentProgress;
@@ -740,23 +951,23 @@ class _MainWindowState extends ConsumerState<MainWindow> {
     if (!mounted) return;
 
     if (result == true) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('エクスポートが完了しました')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('エクスポートが完了しました')));
     } else if (result == 'cancelled') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('エクスポートをキャンセルしました')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('エクスポートをキャンセルしました')));
     } else if (result is Exception || result is Error) {
       final errorMsg = result.toString();
       if (errorMsg.contains('cancelled by user')) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('エクスポートをキャンセルしました')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('エクスポートをキャンセルしました')));
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('エクスポートに失敗しました: $result')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('エクスポートに失敗しました: $result')));
       }
     }
   }
@@ -766,20 +977,11 @@ class _MainWindowState extends ConsumerState<MainWindow> {
       children: [
         Icon(icon, size: 16, color: Colors.grey[600]),
         const SizedBox(width: 8),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 12,
-            color: Colors.grey[600],
-          ),
-        ),
+        Text(label, style: TextStyle(fontSize: 12, color: Colors.grey[600])),
         const Spacer(),
         Text(
           value,
-          style: const TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w500,
-          ),
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500),
         ),
       ],
     );

@@ -55,6 +55,9 @@ DenoiseSettings _$DenoiseSettingsFromJson(Map<String, dynamic> json) =>
       level:
           $enumDecodeNullable(_$DenoiseLevelEnumMap, json['level']) ??
           DenoiseLevel.balanced,
+      backend:
+          $enumDecodeNullable(_$DenoiseBackendEnumMap, json['backend']) ??
+          DenoiseBackend.ffmpeg,
       useNlmeans: json['useNlmeans'] as bool? ?? false,
       useBm3d: json['useBm3d'] as bool? ?? false,
       useVaguedenoiser: json['useVaguedenoiser'] as bool? ?? false,
@@ -75,6 +78,7 @@ Map<String, dynamic> _$DenoiseSettingsToJson(DenoiseSettings instance) =>
       'chromaStrength': instance.chromaStrength,
       'preserveDetails': instance.preserveDetails,
       'level': _$DenoiseLevelEnumMap[instance.level]!,
+      'backend': _$DenoiseBackendEnumMap[instance.backend]!,
       'useNlmeans': instance.useNlmeans,
       'useBm3d': instance.useBm3d,
       'useVaguedenoiser': instance.useVaguedenoiser,
@@ -93,4 +97,10 @@ const _$DenoiseLevelEnumMap = {
   DenoiseLevel.high: 'high',
   DenoiseLevel.maximum: 'maximum',
   DenoiseLevel.aiEnhanced: 'aiEnhanced',
+};
+
+const _$DenoiseBackendEnumMap = {
+  DenoiseBackend.ffmpeg: 'ffmpeg',
+  DenoiseBackend.coreImage: 'coreImage',
+  DenoiseBackend.coreML: 'coreML',
 };

@@ -13,19 +13,23 @@ class TextFeatureExtractor {
     Duration videoDuration, {
     Duration startTime = Duration.zero,
     int samplePoints = 15,
+    List<String>? frames,
+    bool cleanupFrames = true,
   }) async {
     final textSegments = <TextSegment>[];
 
     // Extract frames for OCR
-    final frames = await _visualExtractor.extractFrames(
-      videoPath,
-      videoDuration,
-      startTime: startTime,
-      maxFrames: samplePoints,
-    );
+    final framePaths =
+        frames ??
+        await _visualExtractor.extractFrames(
+          videoPath,
+          videoDuration,
+          startTime: startTime,
+          maxFrames: samplePoints,
+        );
 
-    for (int i = 0; i < frames.length; i++) {
-      final framePath = frames[i];
+    for (int i = 0; i < framePaths.length; i++) {
+      final framePath = framePaths[i];
       final inputImage = InputImage.fromFilePath(framePath);
 
       try {
@@ -33,7 +37,8 @@ class TextFeatureExtractor {
 
         if (recognizedText.text.isNotEmpty) {
           final timestamp = Duration(
-            milliseconds: (videoDuration.inMilliseconds * i / frames.length).round(),
+            milliseconds: (videoDuration.inMilliseconds * i / framePaths.length)
+                .round(),
           );
 
           // Extract all text blocks
@@ -43,12 +48,14 @@ class TextFeatureExtractor {
               .toList();
 
           if (textBlocks.isNotEmpty) {
-            textSegments.add(TextSegment(
-              timestamp: timestamp,
-              text: recognizedText.text,
-              textBlocks: textBlocks,
-              confidence: _calculateAverageConfidence(recognizedText),
-            ));
+            textSegments.add(
+              TextSegment(
+                timestamp: timestamp,
+                text: recognizedText.text,
+                textBlocks: textBlocks,
+                confidence: _calculateAverageConfidence(recognizedText),
+              ),
+            );
           }
         }
       } catch (e) {
@@ -57,10 +64,12 @@ class TextFeatureExtractor {
     }
 
     // Clean up extracted frames
-    for (final framePath in frames) {
-      try {
-        await File(framePath).delete();
-      } catch (_) {}
+    if (cleanupFrames && frames == null) {
+      for (final framePath in framePaths) {
+        try {
+          await File(framePath).delete();
+        } catch (_) {}
+      }
     }
 
     return textSegments;
@@ -97,15 +106,18 @@ class TextFeatureExtractor {
 
           if (isLikelyCaption && block.text.trim().isNotEmpty) {
             final timestamp = Duration(
-              milliseconds: (videoDuration.inMilliseconds * i / frames.length).round(),
+              milliseconds: (videoDuration.inMilliseconds * i / frames.length)
+                  .round(),
             );
 
-            captionSegments.add(CaptionSegment(
-              timestamp: timestamp,
-              text: block.text,
-              position: CaptionPosition.bottom,
-              confidence: 0.8, // Simplified confidence
-            ));
+            captionSegments.add(
+              CaptionSegment(
+                timestamp: timestamp,
+                text: block.text,
+                position: CaptionPosition.bottom,
+                confidence: 0.8, // Simplified confidence
+              ),
+            );
           }
         }
       } catch (e) {
@@ -130,23 +142,50 @@ class TextFeatureExtractor {
     Duration startTime = Duration.zero,
     List<String>? targetKeywords,
   }) async {
-    final keywordSegments = <KeywordSegment>[];
-
     // Extract text from video
     final textSegments = await extractTextFromVideo(
       videoPath,
       videoDuration,
       startTime: startTime,
     );
+    return analyzeKeywordsFromTextSegments(
+      textSegments,
+      targetKeywords: targetKeywords,
+    );
+  }
+
+  Future<List<KeywordSegment>> analyzeKeywordsFromTextSegments(
+    List<TextSegment> textSegments, {
+    List<String>? targetKeywords,
+  }) async {
+    final keywordSegments = <KeywordSegment>[];
 
     // Define common interesting keywords if none provided
-    final keywords = targetKeywords ?? [
-      'new', 'best', 'amazing', 'incredible', 'awesome',
-      'tips', 'tutorial', 'how to', 'guide',
-      'winner', 'goal', 'score', 'victory',
-      'breaking', 'news', 'update', 'announcement',
-      'subscribe', 'like', 'follow', 'share',
-    ];
+    final keywords =
+        targetKeywords ??
+        [
+          'new',
+          'best',
+          'amazing',
+          'incredible',
+          'awesome',
+          'tips',
+          'tutorial',
+          'how to',
+          'guide',
+          'winner',
+          'goal',
+          'score',
+          'victory',
+          'breaking',
+          'news',
+          'update',
+          'announcement',
+          'subscribe',
+          'like',
+          'follow',
+          'share',
+        ];
 
     for (final segment in textSegments) {
       final foundKeywords = <String>[];
@@ -159,11 +198,13 @@ class TextFeatureExtractor {
       }
 
       if (foundKeywords.isNotEmpty) {
-        keywordSegments.add(KeywordSegment(
-          timestamp: segment.timestamp,
-          keywords: foundKeywords,
-          relevanceScore: foundKeywords.length / keywords.length,
-        ));
+        keywordSegments.add(
+          KeywordSegment(
+            timestamp: segment.timestamp,
+            keywords: foundKeywords,
+            relevanceScore: foundKeywords.length / keywords.length,
+          ),
+        );
       }
     }
 
@@ -186,9 +227,21 @@ class TextFeatureExtractor {
 
     // Important words score
     final importantWords = [
-      'important', 'key', 'main', 'critical', 'essential',
-      'new', 'breaking', 'announcement', 'winner', 'champion',
-      'first', 'last', 'final', 'ultimate', 'best',
+      'important',
+      'key',
+      'main',
+      'critical',
+      'essential',
+      'new',
+      'breaking',
+      'announcement',
+      'winner',
+      'champion',
+      'first',
+      'last',
+      'final',
+      'ultimate',
+      'best',
     ];
 
     int importantWordCount = 0;
@@ -202,13 +255,15 @@ class TextFeatureExtractor {
     // Capitalization score (some capitals indicate titles/headers)
     final capitalCount = text.codeUnits.where((c) => c >= 65 && c <= 90).length;
     final capitalRatio = capitalCount / text.length;
-    final capitalizationScore = capitalRatio > 0.1 && capitalRatio < 0.8 ? 0.8 : 0.4;
+    final capitalizationScore = capitalRatio > 0.1 && capitalRatio < 0.8
+        ? 0.8
+        : 0.4;
 
     // Combine scores
     return (lengthScore * 0.3 +
-            importantWordScore * 0.4 +
-            capitalizationScore * 0.2 +
-            segment.confidence * 0.1);
+        importantWordScore * 0.4 +
+        capitalizationScore * 0.2 +
+        segment.confidence * 0.1);
   }
 
   /// Calculate score based on text length
@@ -283,11 +338,7 @@ class CaptionSegment {
 }
 
 /// Caption position in frame
-enum CaptionPosition {
-  top,
-  middle,
-  bottom,
-}
+enum CaptionPosition { top, middle, bottom }
 
 /// Keyword detection result
 class KeywordSegment {

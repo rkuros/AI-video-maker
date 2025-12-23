@@ -112,9 +112,13 @@ flutter run -d macos
 - Select `Preview Quality` preset (Timeline toolbar or Preview controls)
 - Click Timeline toolbar `Play`
 - Expected:
-  - On first play after edits (or after changing Preview Quality), it renders a preview (may take a moment)
+  - On first play after edits (or after changing Preview Quality), it starts a real-time streaming preview (may take a moment)
   - Playback starts at the current timeline position
   - Timeline playhead tracks preview position
+- While playing, click on the time ruler / timeline area to seek
+- Expected:
+  - Stream restarts near the selected position and resumes after a short wait
+  - Playback is seamless (no segment switching stutter during continuous play)
 - Click `Stop`
 - Expected:
   - Playhead returns to 0:00

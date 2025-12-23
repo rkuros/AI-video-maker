@@ -1,6 +1,7 @@
 import 'package:json_annotation/json_annotation.dart';
 import 'enums.dart';
 import 'denoise_level.dart';
+import 'denoise_backend.dart';
 
 part 'media_info.g.dart';
 
@@ -71,6 +72,9 @@ class DenoiseSettings {
   /// Denoise quality level
   final DenoiseLevel level;
 
+  /// Backend used to execute denoise processing.
+  final DenoiseBackend backend;
+
   /// Use nlmeans filter
   final bool useNlmeans;
 
@@ -108,6 +112,7 @@ class DenoiseSettings {
     this.chromaStrength = 0.5,
     this.preserveDetails = true,
     this.level = DenoiseLevel.balanced,
+    this.backend = DenoiseBackend.ffmpeg,
     this.useNlmeans = false,
     this.useBm3d = false,
     this.useVaguedenoiser = false,
@@ -132,6 +137,7 @@ class DenoiseSettings {
     double? chromaStrength,
     bool? preserveDetails,
     DenoiseLevel? level,
+    DenoiseBackend? backend,
     bool? useNlmeans,
     bool? useBm3d,
     bool? useVaguedenoiser,
@@ -150,6 +156,7 @@ class DenoiseSettings {
       chromaStrength: chromaStrength ?? this.chromaStrength,
       preserveDetails: preserveDetails ?? this.preserveDetails,
       level: level ?? this.level,
+      backend: backend ?? this.backend,
       useNlmeans: useNlmeans ?? this.useNlmeans,
       useBm3d: useBm3d ?? this.useBm3d,
       useVaguedenoiser: useVaguedenoiser ?? this.useVaguedenoiser,
