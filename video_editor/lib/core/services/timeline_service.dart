@@ -44,6 +44,39 @@ class TimelineService {
     _timeline = _timeline.moveClip(clipId, newStartTime);
   }
 
+  /// Move a clip to a different track
+  void moveClipToTrack(String clipId, String targetTrackId, Duration newStartTime) {
+    // Find the clip in the current track
+    Track? sourceTrack;
+    Clip? clipToMove;
+
+    for (final track in _timeline.tracks) {
+      final clip = track.clips.where((c) => c.id == clipId).firstOrNull;
+      if (clip != null) {
+        sourceTrack = track;
+        clipToMove = clip;
+        break;
+      }
+    }
+
+    if (sourceTrack == null || clipToMove == null) return;
+    if (sourceTrack.id == targetTrackId) {
+      // Same track, just move position
+      moveClip(clipId, newStartTime);
+      return;
+    }
+
+    // Remove from source track
+    _timeline = _timeline.removeClipFromTrack(sourceTrack.id, clipId);
+
+    // Add to target track with new start time
+    final newClip = clipToMove.copyWith(
+      startTime: newStartTime,
+      endTime: newStartTime + clipToMove.duration,
+    );
+    _timeline = _timeline.addClipToTrack(targetTrackId, newClip);
+  }
+
   /// Trim a clip
   void trimClip(String clipId, Duration newStart, Duration newEnd) {
     _timeline = _timeline.trimClip(clipId, newStart, newEnd);

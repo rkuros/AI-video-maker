@@ -25,6 +25,7 @@ class _MediaLibraryPanelState extends ConsumerState<MediaLibraryPanel> {
   Widget build(BuildContext context) {
     final mediaItems = ref.watch(mediaLibraryProvider);
     final counts = ref.watch(mediaLibraryCountsProvider);
+    final generating = ref.watch(sunoGeneratingProvider);
 
     // Filter items based on type filter and search query
     var filteredItems = _filterType == null
@@ -37,6 +38,19 @@ class _MediaLibraryPanelState extends ConsumerState<MediaLibraryPanel> {
               item.name.toLowerCase().contains(_searchQuery.toLowerCase()))
           .toList();
     }
+
+    final showGenerating =
+        (_filterType == null || _filterType == MediaType.audio) &&
+            (_searchQuery.isEmpty ||
+                generating.any((g) =>
+                    g.toLowerCase().contains(_searchQuery.toLowerCase())));
+    final generatingItems = showGenerating
+        ? generating
+            .where((g) =>
+                _searchQuery.isEmpty ||
+                g.toLowerCase().contains(_searchQuery.toLowerCase()))
+            .toList()
+        : <String>[];
 
     return DropTarget(
       onDragEntered: (_) => setState(() => _isDragging = true),
@@ -76,9 +90,9 @@ class _MediaLibraryPanelState extends ConsumerState<MediaLibraryPanel> {
 
                 // Media items grid or empty state
                 Expanded(
-                  child: filteredItems.isEmpty
+                  child: (filteredItems.isEmpty && generatingItems.isEmpty)
                       ? _buildEmptyState()
-                      : _buildMediaGrid(filteredItems),
+                      : _buildMediaGrid(filteredItems, generatingItems),
                 ),
               ],
             ),
@@ -243,7 +257,7 @@ class _MediaLibraryPanelState extends ConsumerState<MediaLibraryPanel> {
     );
   }
 
-  Widget _buildMediaGrid(List<MediaItem> items) {
+  Widget _buildMediaGrid(List<MediaItem> items, List<String> generatingItems) {
     return GridView.builder(
       padding: const EdgeInsets.all(8),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
@@ -252,10 +266,39 @@ class _MediaLibraryPanelState extends ConsumerState<MediaLibraryPanel> {
         mainAxisSpacing: 8,
         childAspectRatio: 1.2,
       ),
-      itemCount: items.length,
+      itemCount: generatingItems.length + items.length,
       itemBuilder: (context, index) {
-        return _buildMediaCard(items[index]);
+        if (index < generatingItems.length) {
+          return _buildGeneratingCard(generatingItems[index]);
+        }
+        return _buildMediaCard(items[index - generatingItems.length]);
       },
+    );
+  }
+
+  Widget _buildGeneratingCard(String label) {
+    return Card(
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const SizedBox(
+              width: 32,
+              height: 32,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              label,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

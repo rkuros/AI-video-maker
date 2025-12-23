@@ -24,7 +24,9 @@ ExportSettings _$ExportSettingsFromJson(
       ? null
       : AudioSettings.fromJson(json['audioSettings'] as Map<String, dynamic>),
   audioNormalizeEnabled: json['audioNormalizeEnabled'] as bool? ?? false,
-  audioNormalizeFilter: json['audioNormalizeFilter'] as String? ?? 'dynaudnorm',
+  audioNormalizeFilter:
+      json['audioNormalizeFilter'] as String? ??
+      'loudnorm=I=-16:TP=-1.5:LRA=11',
 );
 
 Map<String, dynamic> _$ExportSettingsToJson(ExportSettings instance) =>

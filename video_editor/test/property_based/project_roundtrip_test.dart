@@ -53,54 +53,71 @@ void main() {
               reason: 'Media item type should be preserved');
         }
 
-        // Verify timeline structure is preserved
-        expect(loadedProject.timeline.id, equals(project.timeline.id),
-            reason: 'Timeline ID should be preserved');
-        expect(loadedProject.timeline.tracks.length,
-            equals(project.timeline.tracks.length),
-            reason: 'Timeline track count should be preserved');
+        // Verify timeline groups are preserved
+        expect(loadedProject.timelineGroups.length,
+            equals(project.timelineGroups.length),
+            reason: 'Timeline group count should be preserved');
+        expect(loadedProject.activeTimelineGroupId,
+            equals(project.activeTimelineGroupId),
+            reason: 'Active timeline group should be preserved');
 
-        // Verify tracks and clips are preserved
-        for (int j = 0; j < project.timeline.tracks.length; j++) {
-          final originalTrack = project.timeline.tracks[j];
-          final loadedTrack = loadedProject.timeline.tracks[j];
+        for (int g = 0; g < project.timelineGroups.length; g++) {
+          final originalGroup = project.timelineGroups[g];
+          final loadedGroup = loadedProject.timelineGroups[g];
 
-          expect(loadedTrack.id, equals(originalTrack.id),
-              reason: 'Track ID should be preserved');
-          expect(loadedTrack.type, equals(originalTrack.type),
-              reason: 'Track type should be preserved');
-          expect(loadedTrack.clips.length, equals(originalTrack.clips.length),
-              reason: 'Track clip count should be preserved');
+          expect(loadedGroup.id, equals(originalGroup.id),
+              reason: 'Timeline group ID should be preserved');
+          expect(loadedGroup.name, equals(originalGroup.name),
+              reason: 'Timeline group name should be preserved');
+          expect(loadedGroup.timeline.id, equals(originalGroup.timeline.id),
+              reason: 'Timeline ID should be preserved');
+          expect(loadedGroup.timeline.tracks.length,
+              equals(originalGroup.timeline.tracks.length),
+              reason: 'Timeline track count should be preserved');
 
-          // Verify clips in track
-          for (int k = 0; k < originalTrack.clips.length; k++) {
-            final originalClip = originalTrack.clips[k];
-            final loadedClip = loadedTrack.clips[k];
+          // Verify tracks and clips are preserved
+          for (int j = 0; j < originalGroup.timeline.tracks.length; j++) {
+            final originalTrack = originalGroup.timeline.tracks[j];
+            final loadedTrack = loadedGroup.timeline.tracks[j];
 
-            expect(loadedClip.id, equals(originalClip.id),
-                reason: 'Clip ID should be preserved');
-            expect(loadedClip.mediaItemId, equals(originalClip.mediaItemId),
-                reason: 'Clip media item reference should be preserved');
-            expect(loadedClip.startTime, equals(originalClip.startTime),
-                reason: 'Clip start time should be preserved');
-            expect(loadedClip.endTime, equals(originalClip.endTime),
-                reason: 'Clip end time should be preserved');
+            expect(loadedTrack.id, equals(originalTrack.id),
+                reason: 'Track ID should be preserved');
+            expect(loadedTrack.type, equals(originalTrack.type),
+                reason: 'Track type should be preserved');
+            expect(loadedTrack.clips.length,
+                equals(originalTrack.clips.length),
+                reason: 'Track clip count should be preserved');
 
-            // Verify effects are preserved
-            expect(loadedClip.effects.length,
-                equals(originalClip.effects.length),
-                reason: 'Clip effect count should be preserved');
+            // Verify clips in track
+            for (int k = 0; k < originalTrack.clips.length; k++) {
+              final originalClip = originalTrack.clips[k];
+              final loadedClip = loadedTrack.clips[k];
 
-            for (int m = 0; m < originalClip.effects.length; m++) {
-              final originalEffect = originalClip.effects[m];
-              final loadedEffect = loadedClip.effects[m];
+              expect(loadedClip.id, equals(originalClip.id),
+                  reason: 'Clip ID should be preserved');
+              expect(loadedClip.mediaItemId, equals(originalClip.mediaItemId),
+                  reason: 'Clip media item reference should be preserved');
+              expect(loadedClip.startTime, equals(originalClip.startTime),
+                  reason: 'Clip start time should be preserved');
+              expect(loadedClip.endTime, equals(originalClip.endTime),
+                  reason: 'Clip end time should be preserved');
 
-              expect(loadedEffect.id, equals(originalEffect.id),
-                  reason: 'Effect ID should be preserved');
-              expect(loadedEffect.type, equals(originalEffect.type),
-                  reason: 'Effect type should be preserved');
-              expect(loadedEffect.name, equals(originalEffect.name),
-                  reason: 'Effect name should be preserved');
+              // Verify effects are preserved
+              expect(loadedClip.effects.length,
+                  equals(originalClip.effects.length),
+                  reason: 'Clip effect count should be preserved');
+
+              for (int m = 0; m < originalClip.effects.length; m++) {
+                final originalEffect = originalClip.effects[m];
+                final loadedEffect = loadedClip.effects[m];
+
+                expect(loadedEffect.id, equals(originalEffect.id),
+                    reason: 'Effect ID should be preserved');
+                expect(loadedEffect.type, equals(originalEffect.type),
+                    reason: 'Effect type should be preserved');
+                expect(loadedEffect.name, equals(originalEffect.name),
+                    reason: 'Effect name should be preserved');
+              }
             }
           }
         }
@@ -201,7 +218,13 @@ Project _generateRandomProject(Faker faker) {
     name: faker.lorem.sentence(),
     createdAt: faker.date.dateTime(minYear: 2020, maxYear: 2024),
     updatedAt: faker.date.dateTime(minYear: 2020, maxYear: 2024),
-    timeline: timeline,
+    timelineGroups: [
+      TimelineGroup(
+        name: 'Default',
+        timeline: timeline,
+      ),
+    ],
+    activeTimelineGroupId: null,
     mediaLibrary: mediaItems,
     defaultExportSettings: exportSettings,
   );

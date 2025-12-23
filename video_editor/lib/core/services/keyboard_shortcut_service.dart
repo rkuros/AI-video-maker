@@ -27,35 +27,53 @@ class KeyboardShortcutService {
 
   /// Common shortcuts
   bool isUndo(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyZ, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.keyZ, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.keyZ, ctrl: true);
   }
 
   bool isRedo(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyZ, meta: true, shift: true);
+    return matchesShortcut(
+          event,
+          LogicalKeyboardKey.keyZ,
+          meta: true,
+          shift: true,
+        ) ||
+        matchesShortcut(
+          event,
+          LogicalKeyboardKey.keyZ,
+          ctrl: true,
+          shift: true,
+        );
   }
 
   bool isSave(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyS, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.keyS, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.keyS, ctrl: true);
   }
 
   bool isNew(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyN, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.keyN, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.keyN, ctrl: true);
   }
 
   bool isOpen(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyO, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.keyO, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.keyO, ctrl: true);
   }
 
   bool isCut(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyX, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.keyX, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.keyX, ctrl: true);
   }
 
   bool isCopy(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyC, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.keyC, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.keyC, ctrl: true);
   }
 
   bool isPaste(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyV, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.keyV, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.keyV, ctrl: true);
   }
 
   bool isDelete(KeyEvent event) {
@@ -65,7 +83,8 @@ class KeyboardShortcutService {
   }
 
   bool isSelectAll(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyA, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.keyA, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.keyA, ctrl: true);
   }
 
   bool isPlay(KeyEvent event) {
@@ -74,19 +93,33 @@ class KeyboardShortcutService {
   }
 
   bool isSplitClip(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyS, meta: true, shift: true);
+    return matchesShortcut(
+          event,
+          LogicalKeyboardKey.keyS,
+          meta: true,
+          shift: true,
+        ) ||
+        matchesShortcut(
+          event,
+          LogicalKeyboardKey.keyS,
+          ctrl: true,
+          shift: true,
+        );
   }
 
   bool isZoomIn(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.equal, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.equal, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.equal, ctrl: true);
   }
 
   bool isZoomOut(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.minus, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.minus, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.minus, ctrl: true);
   }
 
   bool isExport(KeyEvent event) {
-    return matchesShortcut(event, LogicalKeyboardKey.keyE, meta: true);
+    return matchesShortcut(event, LogicalKeyboardKey.keyE, meta: true) ||
+        matchesShortcut(event, LogicalKeyboardKey.keyE, ctrl: true);
   }
 
   /// Get shortcut description for display

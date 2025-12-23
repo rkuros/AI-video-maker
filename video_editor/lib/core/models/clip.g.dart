@@ -28,6 +28,7 @@ Clip _$ClipFromJson(Map<String, dynamic> json) => Clip(
         ),
   volume: (json['volume'] as num?)?.toDouble() ?? 1.0,
   isMuted: json['isMuted'] as bool? ?? false,
+  isVisible: json['isVisible'] as bool? ?? true,
 );
 
 Map<String, dynamic> _$ClipToJson(Clip instance) => <String, dynamic>{
@@ -42,4 +43,5 @@ Map<String, dynamic> _$ClipToJson(Clip instance) => <String, dynamic>{
   'outTransition': instance.outTransition,
   'volume': instance.volume,
   'isMuted': instance.isMuted,
+  'isVisible': instance.isVisible,
 };

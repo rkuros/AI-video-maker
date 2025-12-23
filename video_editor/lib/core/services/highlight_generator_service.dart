@@ -30,9 +30,29 @@ class HighlightGeneratorService {
   static const Duration _maxSegmentDuration = Duration(seconds: 5);
   static const Duration _fallbackSegmentDuration = Duration(seconds: 3);
 
+  // Beat-based highlights tend to feel too "choppy" if we strictly follow beat
+  // intervals (e.g. 120bpm -> 1.5s with 3 beats). Use a wider range.
+  static const Duration _beatMinSegmentDuration = Duration(seconds: 2);
+  static const Duration _beatMaxSegmentDuration = Duration(seconds: 8);
+
   static const HighlightPattern _defaultPattern = HighlightPattern.vlog;
   static const HighlightPreferences _defaultPreferences =
       HighlightPreferences();
+
+  String _segmentDedupKey(_SegmentContext context) {
+    final startMs = context.segment.start.inMilliseconds;
+    final endMs = context.segment.end.inMilliseconds;
+    return '${context.clip.id}:$startMs:$endMs';
+  }
+
+  List<_SegmentContext> _dedupeSegmentContexts(List<_SegmentContext> segments) {
+    final seen = <String>{};
+    final out = <_SegmentContext>[];
+    for (final s in segments) {
+      if (seen.add(_segmentDedupKey(s))) out.add(s);
+    }
+    return out;
+  }
 
   void _emitProgress(
     HighlightProgressCallback? onProgress,
@@ -117,10 +137,12 @@ class HighlightGeneratorService {
         .where((b) => b.type == BeatType.strong || b.type == BeatType.accent)
         .toList();
 
-    final candidates = _extractBeatSegments(
-      baseTimeline,
-      importantBeats,
-      beatAnalysis.bpm,
+    final candidates = _dedupeSegmentContexts(
+      _extractBeatSegments(
+        baseTimeline,
+        importantBeats,
+        beatAnalysis.bpm,
+      ),
     );
     if (candidates.isEmpty) {
       return generateTimeBasedHighlight(
@@ -146,11 +168,11 @@ class HighlightGeneratorService {
 
     if (preferences.requireAllClips) {
       try {
-        final requiredClipIds = _collectRequiredClipIds(baseTimeline);
+        final requiredMediaItemIds = _collectRequiredMediaItemIds(baseTimeline);
         final selected = _selectTopSegmentsEnsuringCoverage(
           scored,
           targetDuration,
-          requiredClipIds: requiredClipIds,
+          requiredMediaItemIds: requiredMediaItemIds,
           oneSegmentPerClip: preferences.oneSegmentPerClip,
         )..sort((a, b) => a.segment.start.compareTo(b.segment.start));
         return _buildHighlightFromSegments(selected, bgmTrack: bgmTrack);
@@ -165,13 +187,17 @@ class HighlightGeneratorService {
       }
     }
 
-    final selected = _selectBeatSegments(
+    // Prefer score-based selection over chronological-first for better quality
+    // and fewer repeated segments. Beat alignment is preserved because the
+    // candidates themselves are built around beat timestamps.
+    final diverse = _applyDiversityConstraints(
       scored,
-      targetDuration,
-      minGapSeconds: minGapSeconds,
-      diversityWeight: diversityWeight,
+      minGapSeconds,
+      diversityWeight,
       oneSegmentPerClip: preferences.oneSegmentPerClip,
     );
+    final selected = _selectTopSegments(diverse, targetDuration)
+      ..sort((a, b) => a.segment.start.compareTo(b.segment.start));
     _emitProgress(
       onProgress,
       const HighlightGenerationProgress(
@@ -189,8 +215,8 @@ class HighlightGeneratorService {
     HighlightPreferences preferences = _defaultPreferences,
     HighlightProgressCallback? onProgress,
   }) async {
-    final requiredClipIds = preferences.requireAllClips
-        ? _collectRequiredClipIds(baseTimeline)
+    final requiredMediaItemIds = preferences.requireAllClips
+        ? _collectRequiredMediaItemIds(baseTimeline)
         : null;
     _emitProgress(
       onProgress,
@@ -215,15 +241,15 @@ class HighlightGeneratorService {
       max(pattern.diversityWeight, preferences.diversityWeight),
       oneSegmentPerClip: preferences.oneSegmentPerClip,
     );
-    final selectionPool = requiredClipIds == null
+    final selectionPool = requiredMediaItemIds == null
         ? diverseSegments
         : scoredSegments;
-    final selected = (requiredClipIds == null)
+    final selected = (requiredMediaItemIds == null)
         ? _selectTopSegments(selectionPool, targetDuration)
         : _selectTopSegmentsEnsuringCoverage(
             selectionPool,
             targetDuration,
-            requiredClipIds: requiredClipIds,
+            requiredMediaItemIds: requiredMediaItemIds,
             oneSegmentPerClip: preferences.oneSegmentPerClip,
           );
     _emitProgress(
@@ -244,8 +270,8 @@ class HighlightGeneratorService {
     HighlightPreferences preferences, {
     HighlightProgressCallback? onProgress,
   }) async {
-    final requiredClipIds = preferences.requireAllClips
-        ? _collectRequiredClipIds(baseTimeline)
+    final requiredMediaItemIds = preferences.requireAllClips
+        ? _collectRequiredMediaItemIds(baseTimeline)
         : null;
     // Extract segments
     _emitProgress(
@@ -274,22 +300,22 @@ class HighlightGeneratorService {
       max(pattern.diversityWeight, preferences.diversityWeight),
       oneSegmentPerClip: preferences.oneSegmentPerClip,
     );
-    final selectionPool = requiredClipIds == null
+    final selectionPool = requiredMediaItemIds == null
         ? diverseSegments
         : scoredSegments;
 
     // Select segments to fit duration
-    final selectedSegments = (requiredClipIds == null)
+    final selectedSegments = (requiredMediaItemIds == null)
         ? _selectTopSegments(selectionPool, targetDuration)
         : _selectTopSegmentsEnsuringCoverage(
             selectionPool,
             targetDuration,
-            requiredClipIds: requiredClipIds,
+            requiredMediaItemIds: requiredMediaItemIds,
             oneSegmentPerClip: preferences.oneSegmentPerClip,
           );
 
     // Adjust pace based on pattern
-    final adjustedSegments = requiredClipIds == null
+    final adjustedSegments = requiredMediaItemIds == null
         ? _adjustPace(selectedSegments, pattern.paceFactor)
         : selectedSegments;
 
@@ -303,11 +329,11 @@ class HighlightGeneratorService {
     return _buildHighlightFromSegments(adjustedSegments);
   }
 
-  Set<String> _collectRequiredClipIds(Timeline timeline) {
+  Set<String> _collectRequiredMediaItemIds(Timeline timeline) {
     final ids = <String>{};
     for (final track in timeline.videoTracks) {
       for (final clip in track.clips) {
-        ids.add(clip.id);
+        ids.add(clip.mediaItemId);
       }
     }
     return ids;
@@ -338,18 +364,19 @@ class HighlightGeneratorService {
   List<_SegmentContext> _selectTopSegmentsEnsuringCoverage(
     List<_ScoredSegment> scores,
     Duration targetDuration, {
-    required Set<String> requiredClipIds,
+    required Set<String> requiredMediaItemIds,
     required bool oneSegmentPerClip,
   }) {
-    if (requiredClipIds.isEmpty) {
+    if (requiredMediaItemIds.isEmpty) {
       return _selectTopSegments(scores, targetDuration);
     }
 
-    final minRequiredDuration = _minSegmentDuration * requiredClipIds.length;
+    final minRequiredDuration =
+        _minSegmentDuration * requiredMediaItemIds.length;
     if (targetDuration < minRequiredDuration) {
       throw StateError(
-        'Target duration too short to include all clips: '
-        '${requiredClipIds.length} clips require at least '
+        'Target duration too short to include all media items: '
+        '${requiredMediaItemIds.length} media items require at least '
         '${minRequiredDuration.inSeconds}s.',
       );
     }
@@ -358,23 +385,23 @@ class HighlightGeneratorService {
 
     final bestByClipId = <String, _ScoredSegment>{};
     for (final s in scores) {
-      bestByClipId.putIfAbsent(s.context.clip.id, () => s);
-      if (bestByClipId.length == requiredClipIds.length) break;
+      bestByClipId.putIfAbsent(s.context.clip.mediaItemId, () => s);
+      if (bestByClipId.length == requiredMediaItemIds.length) break;
     }
 
-    final missing = requiredClipIds.where(
+    final missing = requiredMediaItemIds.where(
       (id) => !bestByClipId.containsKey(id),
     );
     if (missing.isNotEmpty) {
       throw StateError(
-        'No candidate segments for some clips: ${missing.join(", ")}',
+        'No candidate segments for some media items: ${missing.join(", ")}',
       );
     }
 
     var remainingExtra =
-        targetDuration - (_minSegmentDuration * requiredClipIds.length);
+        targetDuration - (_minSegmentDuration * requiredMediaItemIds.length);
     final mandatorySortedByScore = List<_ScoredSegment>.from(
-      requiredClipIds.map((id) => bestByClipId[id]!),
+      requiredMediaItemIds.map((id) => bestByClipId[id]!),
     )..sort((a, b) => b.score.score.compareTo(a.score.score));
 
     final selected = <_SegmentContext>[];
@@ -398,13 +425,14 @@ class HighlightGeneratorService {
 
     if (oneSegmentPerClip) return selected;
 
-    final selectedSegmentIds = selected.map((s) => s.segment.id).toSet();
+    final selectedSegmentKeys = selected.map(_segmentDedupKey).toSet();
     for (final s in scores) {
-      if (selectedSegmentIds.contains(s.context.segment.id)) continue;
+      final key = _segmentDedupKey(s.context);
+      if (selectedSegmentKeys.contains(key)) continue;
       final segmentDuration = s.context.segment.duration;
       if (totalDuration + segmentDuration <= targetDuration) {
         selected.add(s.context);
-        selectedSegmentIds.add(s.context.segment.id);
+        selectedSegmentKeys.add(key);
         totalDuration += segmentDuration;
       } else {
         final remaining = targetDuration - totalDuration;
@@ -638,9 +666,10 @@ class HighlightGeneratorService {
     HighlightPreferences preferences, {
     HighlightProgressCallback? onProgress,
   }) async {
+    final dedupedSegments = _dedupeSegmentContexts(segments);
     final scored = <_ScoredSegment>[];
     final preferenceMultiplier = _calculatePreferenceMultiplier(preferences);
-    final total = segments.length;
+    final total = dedupedSegments.length;
     _emitProgress(
       onProgress,
       HighlightGenerationProgress(
@@ -651,8 +680,8 @@ class HighlightGeneratorService {
     );
 
     // Process segments in parallel batches
-    for (var i = 0; i < segments.length; i += _maxParallelJobs) {
-      final batch = segments.skip(i).take(_maxParallelJobs).toList();
+    for (var i = 0; i < dedupedSegments.length; i += _maxParallelJobs) {
+      final batch = dedupedSegments.skip(i).take(_maxParallelJobs).toList();
 
       final batchResults = await Future.wait(
         batch.map(
@@ -766,15 +795,16 @@ class HighlightGeneratorService {
       intervalMs = diffs[diffs.length ~/ 2].toDouble().clamp(200.0, 1500.0);
     }
 
-    final desiredMs = (intervalMs * 3).clamp(
-      _minSegmentDuration.inMilliseconds.toDouble(),
-      _maxSegmentDuration.inMilliseconds.toDouble(),
+    final desiredMs = (intervalMs * 8).clamp(
+      _beatMinSegmentDuration.inMilliseconds.toDouble(),
+      _beatMaxSegmentDuration.inMilliseconds.toDouble(),
     );
     final desired = Duration(milliseconds: desiredMs.round());
     final pre = Duration(milliseconds: (desired.inMilliseconds * 0.25).round());
     final post = desired - pre;
 
     final contexts = <_SegmentContext>[];
+    final seen = <String>{};
     for (final beat in beats) {
       for (final track in timeline.videoTracks) {
         for (final clip in track.clips) {
@@ -791,7 +821,7 @@ class HighlightGeneratorService {
               start = end - desired;
               if (start < clip.startTime) start = clip.startTime;
             }
-            if (end - start < _minSegmentDuration) break;
+            if (end - start < _beatMinSegmentDuration) break;
 
             final segment = HighlightSegment(
               start: start,
@@ -804,9 +834,11 @@ class HighlightGeneratorService {
                 'beatType': beat.type.name,
               },
             );
-            contexts.add(
-              _SegmentContext(segment: segment, clip: clip, track: track),
-            );
+            final context =
+                _SegmentContext(segment: segment, clip: clip, track: track);
+            if (seen.add(_segmentDedupKey(context))) {
+              contexts.add(context);
+            }
             break;
           }
         }
@@ -854,12 +886,9 @@ class HighlightGeneratorService {
 
       // Check content diversity: avoid too many segments from same clip
       if (shouldInclude) {
-        final sameClipCount = selected.where((s) {
-          if (oneSegmentPerClip) {
-            return s.context.clip.id == score.context.clip.id;
-          }
-          return s.context.clip.mediaItemId == score.context.clip.mediaItemId;
-        }).length;
+        final sameClipCount = selected.where(
+          (s) => s.context.clip.mediaItemId == score.context.clip.mediaItemId,
+        ).length;
 
         // Limit segments from same clip based on diversity weight
         final maxSameClip = oneSegmentPerClip
@@ -961,12 +990,9 @@ class HighlightGeneratorService {
       }
 
       if (ok) {
-        final sameClipCount = selected.where((s) {
-          if (oneSegmentPerClip) {
-            return s.context.clip.id == score.context.clip.id;
-          }
-          return s.context.clip.mediaItemId == score.context.clip.mediaItemId;
-        }).length;
+        final sameClipCount = selected.where(
+          (s) => s.context.clip.mediaItemId == score.context.clip.mediaItemId,
+        ).length;
         final maxSameClip = oneSegmentPerClip
             ? 1
             : (10 * (1 - diversityWeight)).round() + 2;
@@ -999,17 +1025,17 @@ class HighlightGeneratorService {
     final videoTrack = Track(type: TrackType.video, name: 'Highlight Video');
     timeline = timeline.addTrack(videoTrack);
 
-    // Create audio track for original video audio
-    final audioTrack = Track(type: TrackType.audio, name: 'Original Audio');
-    timeline = timeline.addTrack(audioTrack);
-
     var currentTime = Duration.zero;
+    final used = <String>{};
     for (final context in segments) {
+      if (!used.add(_segmentDedupKey(context))) {
+        continue;
+      }
       final sourceOffset = context.segment.start - context.clip.startTime;
       final sourceStart = context.clip.sourceStart + sourceOffset;
       final duration = context.segment.duration;
 
-      // Add video clip
+      // Add video clip (audio is included in the video and controlled via Properties panel)
       final videoClip = Clip(
         mediaItemId: context.clip.mediaItemId,
         startTime: currentTime,
@@ -1019,28 +1045,10 @@ class HighlightGeneratorService {
       );
       timeline = timeline.addClipToTrack(videoTrack.id, videoClip);
 
-      // Add audio clip from the same source
-      final mediaItem = _mediaLibrary.cast<MediaItem?>().firstWhere(
-        (item) => item?.id == context.clip.mediaItemId,
-        orElse: () => null,
-      );
-
-      // Only add audio clip if the media item has audio (video or audio type)
-      if (mediaItem != null &&
-          (mediaItem.type == MediaType.video || mediaItem.type == MediaType.audio)) {
-        final audioClip = Clip(
-          mediaItemId: context.clip.mediaItemId,
-          startTime: currentTime,
-          endTime: currentTime + duration,
-          sourceStart: sourceStart,
-          sourceDuration: duration,
-        );
-        timeline = timeline.addClipToTrack(audioTrack.id, audioClip);
-      }
-
       currentTime += duration;
     }
 
+    // Add BGM track only if BGM is specified
     if (bgmTrack != null &&
         bgmTrack.filePath.isNotEmpty &&
         currentTime > Duration.zero) {

@@ -635,7 +635,13 @@ class ExportEngine {
       'd=${timelineSeconds.toStringAsFixed(3)}[$currentAudioLabel]',
     );
 
-    final videoTracks = timeline.videoTracks;
+    // Process tracks in reverse order so the first track (top in UI) is rendered on top
+    // Skip invisible tracks
+    final videoTracks = timeline.videoTracks
+        .where((t) => t.isVisible)
+        .toList()
+        .reversed
+        .toList();
     for (var trackIndex = 0; trackIndex < videoTracks.length; trackIndex++) {
       final track = videoTracks[trackIndex];
       final trackInputs =
@@ -646,6 +652,7 @@ class ExportEngine {
                     spec.mediaItem.type == MediaType.video ||
                     spec.mediaItem.type == MediaType.image,
               )
+              .where((spec) => spec.clip.isVisible) // Skip invisible clips
               .toList()
             ..sort((a, b) => a.clip.startTime.compareTo(b.clip.startTime));
 
@@ -674,6 +681,11 @@ class ExportEngine {
       final clip = spec.clip;
       final track = spec.track;
 
+      // Skip invisible tracks/clips
+      if (!track.isVisible || !clip.isVisible) {
+        continue;
+      }
+
       final hasAudio =
           item.type == MediaType.audio || item.type == MediaType.video;
       if (!hasAudio || _isMuted(track, clip)) {
@@ -691,9 +703,19 @@ class ExportEngine {
         'atrim=start=${_seconds(clip.sourceStart)}:duration=${_seconds(clipDuration)}',
         'asetpts=PTS-STARTPTS',
       ];
+
+      // Apply audio normalize first (only to video tracks, not to audio tracks/BGM)
+      if (track.type == TrackType.video &&
+          audioNormalizeEnabled &&
+          audioNormalizeFilter.trim().isNotEmpty) {
+        audioFilters.add(audioNormalizeFilter);
+      }
+
+      // Apply volume adjustment after normalize, so users can adjust normalized audio
       if (volume != 1.0) {
         audioFilters.add('volume=${volume.toStringAsFixed(3)}');
       }
+
       audioFilters.addAll(_buildAudioTransitionFilters(clip, clipDuration));
 
       final audioLabel = 'aclip${spec.inputIndex}';
@@ -715,11 +737,7 @@ class ExportEngine {
     }
 
     filters.add('[$currentVideoLabel]format=yuv420p[vout]');
-    if (audioNormalizeEnabled && audioNormalizeFilter.trim().isNotEmpty) {
-      filters.add('[$currentAudioLabel]$audioNormalizeFilter[aout]');
-    } else {
-      filters.add('[$currentAudioLabel]anull[aout]');
-    }
+    filters.add('[$currentAudioLabel]anull[aout]');
 
     return filters.join(';');
   }
@@ -869,10 +887,16 @@ class ExportEngine {
     }
 
     if (currentDuration < timelineDuration) {
-      final padSeconds = _seconds(timelineDuration - currentDuration);
+      final padDuration = timelineDuration - currentDuration;
+      final padSeconds = _seconds(padDuration);
+      // Use transparent padding instead of cloning the last frame
+      final padLabel = 'vpad_${trackIndex}_end';
+      filters.add(
+        'color=c=black@0.0:s=${width}x$height:d=$padSeconds,fps=$fps,format=rgba,setsar=1[$padLabel]',
+      );
       final paddedLabel = 'vtrack_${trackIndex}_padded';
       filters.add(
-        '[$currentLabel]tpad=stop_mode=clone:stop_duration=$padSeconds[$paddedLabel]',
+        '[$currentLabel][$padLabel]concat=n=2:v=1:a=0,settb=1/$fps[$paddedLabel]',
       );
       return paddedLabel;
     }

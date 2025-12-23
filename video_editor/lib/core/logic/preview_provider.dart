@@ -45,6 +45,8 @@ class PreviewState {
   final bool isTimelineStreaming;
   final Duration timelineStreamStartOffset;
   final enums.PreviewQualityPreset timelinePreviewPreset;
+  final bool audioNormalizeEnabled;
+  final String audioNormalizeFilter;
 
   const PreviewState({
     this.player,
@@ -68,6 +70,8 @@ class PreviewState {
     this.isTimelineStreaming = false,
     this.timelineStreamStartOffset = Duration.zero,
     this.timelinePreviewPreset = enums.PreviewQualityPreset.quick,
+    this.audioNormalizeEnabled = false,
+    this.audioNormalizeFilter = 'loudnorm=I=-16:TP=-1.5:LRA=11',
   });
 
   static const Object _unset = Object();
@@ -94,6 +98,8 @@ class PreviewState {
     bool? isTimelineStreaming,
     Duration? timelineStreamStartOffset,
     enums.PreviewQualityPreset? timelinePreviewPreset,
+    bool? audioNormalizeEnabled,
+    String? audioNormalizeFilter,
   }) {
     return PreviewState(
       player: identical(player, _unset) ? this.player : player as Player?,
@@ -136,6 +142,9 @@ class PreviewState {
           timelineStreamStartOffset ?? this.timelineStreamStartOffset,
       timelinePreviewPreset:
           timelinePreviewPreset ?? this.timelinePreviewPreset,
+      audioNormalizeEnabled:
+          audioNormalizeEnabled ?? this.audioNormalizeEnabled,
+      audioNormalizeFilter: audioNormalizeFilter ?? this.audioNormalizeFilter,
     );
   }
 }
@@ -601,9 +610,15 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     try {
       _ensurePlayerInitialized();
       _log('play()');
-      await _player!.play();
+
       if (state.isEffectPreview && _comparePlayer != null) {
-        await _comparePlayer!.play();
+        // Play both players in sync
+        await Future.wait([
+          _player!.play(),
+          _comparePlayer!.play(),
+        ]);
+      } else {
+        await _player!.play();
       }
     } catch (e, st) {
       _log('play() failed', error: e, stackTrace: st);
@@ -616,9 +631,15 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     try {
       if (_player == null) return;
       _log('pause()');
-      await _player!.pause();
+
       if (state.isEffectPreview && _comparePlayer != null) {
-        await _comparePlayer!.pause();
+        // Pause both players in sync
+        await Future.wait([
+          _player!.pause(),
+          _comparePlayer!.pause(),
+        ]);
+      } else {
+        await _player!.pause();
       }
     } catch (e, st) {
       _log('pause() failed', error: e, stackTrace: st);
@@ -643,8 +664,16 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
         var pos = position;
         if (pos < Duration.zero) pos = Duration.zero;
         if (pos > clipDuration) pos = clipDuration;
-        await _player!.seek(pos);
-        await _comparePlayer!.seek(state.effectClipSourceStart + pos);
+
+        try {
+          // Seek both players in parallel
+          await Future.wait([
+            _player!.seek(pos),
+            _comparePlayer!.seek(state.effectClipSourceStart + pos),
+          ]);
+        } catch (e) {
+          _log('seekTo in effect preview failed', error: e);
+        }
         return;
       }
     }
@@ -666,9 +695,19 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
   Future<void> setPlaybackSpeed(PlaybackSpeed speed) async {
     state = state.copyWith(speed: speed);
     if (_player == null) return;
-    await _player!.setRate(speed.value);
-    if (state.isEffectPreview && _comparePlayer != null) {
-      await _comparePlayer!.setRate(speed.value);
+
+    try {
+      if (state.isEffectPreview && _comparePlayer != null) {
+        // Set rate for both players in sync
+        await Future.wait([
+          _player!.setRate(speed.value),
+          _comparePlayer!.setRate(speed.value),
+        ]);
+      } else {
+        await _player!.setRate(speed.value);
+      }
+    } catch (e) {
+      _log('setPlaybackSpeed failed', error: e);
     }
   }
 
@@ -747,6 +786,44 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
     );
   }
 
+  /// Toggle audio normalize for timeline preview
+  Future<void> setAudioNormalize(bool enabled) async {
+    if (enabled == state.audioNormalizeEnabled) return;
+
+    final wasPlaying = state.isPlaying;
+    final wasStreaming = state.isTimelineStreaming;
+    final currentTimelinePosition = wasStreaming
+        ? state.timelineStreamStartOffset + state.currentPosition
+        : null;
+
+    state = state.copyWith(
+      audioNormalizeEnabled: enabled,
+      timelinePreviewPath: null,
+    );
+
+    // If a timeline stream is active, restart it with the new audio normalize setting
+    if (wasStreaming &&
+        _lastStreamTimeline != null &&
+        _lastStreamMediaLibrary != null) {
+      await loadTimelinePreview(
+        _lastStreamTimeline!,
+        _lastStreamMediaLibrary!,
+        startPosition: currentTimelinePosition,
+      );
+      if (wasPlaying) {
+        await play();
+      }
+      return;
+    }
+
+    // Otherwise, just update the state; the next Play will use the new setting
+    await _detachTimelineStream();
+    state = state.copyWith(
+      isTimelineStreaming: false,
+      timelineStreamStartOffset: Duration.zero,
+    );
+  }
+
   ExportSettings _settingsForTimelineStream({
     required enums.PreviewQualityPreset preset,
   }) {
@@ -759,6 +836,8 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
           frameRate: 12,
           videoPreset: 'ultrafast',
           audioSettings: const AudioSettings(bitrate: 96000),
+          audioNormalizeEnabled: state.audioNormalizeEnabled,
+          audioNormalizeFilter: state.audioNormalizeFilter,
         );
       case enums.PreviewQualityPreset.quick:
         return ExportSettings(
@@ -768,6 +847,8 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
           frameRate: 15,
           videoPreset: 'ultrafast',
           audioSettings: const AudioSettings(bitrate: 96000),
+          audioNormalizeEnabled: state.audioNormalizeEnabled,
+          audioNormalizeFilter: state.audioNormalizeFilter,
         );
       case enums.PreviewQualityPreset.balanced:
         return ExportSettings(
@@ -777,6 +858,8 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
           frameRate: 24,
           videoPreset: 'veryfast',
           audioSettings: const AudioSettings(bitrate: 128000),
+          audioNormalizeEnabled: state.audioNormalizeEnabled,
+          audioNormalizeFilter: state.audioNormalizeFilter,
         );
       case enums.PreviewQualityPreset.standard:
         return ExportSettings(
@@ -786,6 +869,8 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
           frameRate: 30,
           videoPreset: 'medium',
           audioSettings: const AudioSettings(bitrate: 192000),
+          audioNormalizeEnabled: state.audioNormalizeEnabled,
+          audioNormalizeFilter: state.audioNormalizeFilter,
         );
     }
   }
@@ -837,9 +922,16 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       await _player!.open(Media(outputPath), play: false);
       await _player!.setRate(state.speed.value);
 
+      // Open and wait for compare player to be ready before seeking
       await _comparePlayer!.open(Media(mediaItem.filePath), play: false);
       await _comparePlayer!.setRate(state.speed.value);
+
+      // Wait for the stream to be ready before seeking
+      await Future.delayed(const Duration(milliseconds: 100));
       await _comparePlayer!.seek(clip.sourceStart);
+
+      // Ensure both players start at the correct position
+      await _player!.seek(Duration.zero);
 
       state = state.copyWith(
         isLoading: false,
@@ -857,27 +949,36 @@ class PreviewNotifier extends StateNotifier<PreviewState> {
       );
 
       _effectSyncTimer?.cancel();
+
+      // Wait a bit to ensure both players are fully initialized
+      await Future.delayed(const Duration(milliseconds: 200));
+
       _effectSyncTimer = Timer.periodic(const Duration(milliseconds: 300), (
         _,
       ) async {
         if (!state.isEffectPreview || _player == null || _comparePlayer == null)
           return;
-        final pos = _player!.state.position;
-        final target = state.effectClipSourceStart + pos;
-        final beforePos = _comparePlayer!.state.position;
-        final drift = (beforePos - target).inMilliseconds.abs();
-        if (drift > 150) {
-          try {
+
+        try {
+          final pos = _player!.state.position;
+          final target = state.effectClipSourceStart + pos;
+          final beforePos = _comparePlayer!.state.position;
+          final drift = (beforePos - target).inMilliseconds.abs();
+
+          // Sync compare player if drift is too large
+          if (drift > 150) {
             await _comparePlayer!.seek(target);
-          } catch (_) {}
-        }
-        final d = state.effectClipDuration;
-        if (d > Duration.zero && pos >= d) {
-          try {
+          }
+
+          // Loop back to start when reaching the end
+          final d = state.effectClipDuration;
+          if (d > Duration.zero && pos >= d) {
             await pause();
             await _player!.seek(Duration.zero);
             await _comparePlayer!.seek(state.effectClipSourceStart);
-          } catch (_) {}
+          }
+        } catch (e) {
+          _log('Effect sync timer error', error: e);
         }
       });
     } catch (e) {

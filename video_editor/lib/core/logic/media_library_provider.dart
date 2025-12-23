@@ -140,6 +140,11 @@ final mediaLibraryProvider =
   return MediaLibraryNotifier(service);
 });
 
+/// Provider for Suno generation placeholders shown in the media library.
+final sunoGeneratingProvider = StateProvider<List<String>>((ref) {
+  return <String>[];
+});
+
 /// Provider for filtered media items (videos only)
 final videoItemsProvider = Provider<List<MediaItem>>((ref) {
   final items = ref.watch(mediaLibraryProvider);

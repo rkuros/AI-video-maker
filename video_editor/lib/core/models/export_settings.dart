@@ -25,7 +25,7 @@ class ExportSettings {
     this.videoPreset = 'medium',
     AudioSettings? audioSettings,
     this.audioNormalizeEnabled = false,
-    this.audioNormalizeFilter = 'dynaudnorm',
+    this.audioNormalizeFilter = 'loudnorm=I=-16:TP=-1.5:LRA=11',
   }) : audioSettings = audioSettings ?? AudioSettings();
 
   factory ExportSettings.fromJson(Map<String, dynamic> json) =>

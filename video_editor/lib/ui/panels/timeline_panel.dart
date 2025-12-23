@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
@@ -67,6 +69,278 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     setState(() {});
   }
 
+  Future<void> _generateAudioWithSuno() async {
+    final description = await _promptSongDescription();
+    if (description == null || description.trim().isEmpty) return;
+
+    final cliPath = Platform.environment['SUNO_CLI_PATH'] ??
+        '/Users/miyanorococo/Repository/video-maker/video_editor/tools/suno/suno_cli.py';
+    final cdpUrl =
+        Platform.environment['SUNO_CDP_URL'] ?? 'http://127.0.0.1:9222';
+    final pythonExe = Platform.environment['SUNO_PYTHON'] ?? 'python3';
+
+    if (!File(cliPath).existsSync()) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Suno CLI not found: $cliPath')),
+      );
+      return;
+    }
+
+    final setupOk = await _ensureSunoSetup(cdpUrl);
+    if (!setupOk) return;
+
+    if (!mounted) return;
+    final generatingNotifier = ref.read(sunoGeneratingProvider.notifier);
+    final initialLabel = 'Generating: ${_truncateLabel(description.trim())}';
+    generatingNotifier.state = [initialLabel];
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Generating audio in background...')),
+    );
+
+    unawaited(
+      _runSunoProcess(
+        pythonExe: pythonExe,
+        cliPath: cliPath,
+        cdpUrl: cdpUrl,
+        description: description.trim(),
+        generatingNotifier: generatingNotifier,
+      ),
+    );
+  }
+
+  Future<void> _runSunoProcess({
+    required String pythonExe,
+    required String cliPath,
+    required String cdpUrl,
+    required String description,
+    required StateController<List<String>> generatingNotifier,
+  }) async {
+    final process = await Process.start(
+      pythonExe,
+      [
+        cliPath,
+        '--connect-cdp',
+        cdpUrl,
+        '--song-desc',
+        description,
+        '--count',
+        '2',
+      ],
+      runInShell: false,
+    );
+
+    final stdoutLines = <String>[];
+    final stderrLines = <String>[];
+    process.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
+      stdoutLines.add(line);
+      if (line.startsWith('UI shows new clip(s):')) {
+        final raw = line.replaceFirst('UI shows new clip(s):', '').trim();
+        final ids = raw.isEmpty
+            ? <String>[]
+            : raw
+                .split(',')
+                .map((id) => id.trim())
+                .where((id) => id.isNotEmpty)
+                .toList();
+        if (ids.isNotEmpty) {
+          generatingNotifier.state =
+              ids.map((id) => 'Generating clip $id').toList();
+        }
+      }
+    });
+    process.stderr
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(stderrLines.add);
+
+    final exitCode = await process.exitCode;
+    if (!mounted) return;
+
+    if (exitCode != 0) {
+      generatingNotifier.state = [];
+      final tail = stderrLines.isNotEmpty
+          ? stderrLines.last
+          : 'Suno CLI exited with code $exitCode';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(tail)),
+      );
+      return;
+    }
+
+    final mp3Paths = stdoutLines.where((line) => line.endsWith('.mp3')).toList();
+    if (mp3Paths.isEmpty) {
+      generatingNotifier.state = [];
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No MP3 files reported by Suno CLI.')),
+      );
+      return;
+    }
+
+    final mediaNotifier = ref.read(mediaLibraryProvider.notifier);
+    for (final filePath in mp3Paths) {
+      await mediaNotifier.importFile(filePath);
+    }
+
+    generatingNotifier.state = [];
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Added ${mp3Paths.length} audio item(s).')),
+    );
+  }
+
+  Future<bool> _ensureSunoSetup(String cdpUrl) async {
+    if (await _isCdpAvailable(cdpUrl)) {
+      return true;
+    }
+
+    final launched = await _showSetupDialog();
+    if (!launched) return false;
+
+    await _openSunoCreatePage();
+    final ready = await _showLoginDialog();
+    if (!ready) return false;
+
+    return _isCdpAvailable(cdpUrl);
+  }
+
+  Future<bool> _isCdpAvailable(String cdpUrl) async {
+    final uri = Uri.tryParse(cdpUrl);
+    if (uri == null || uri.host.isEmpty) return false;
+    final port = uri.port == 0 ? 9222 : uri.port;
+    try {
+      final socket = await Socket.connect(uri.host, port,
+          timeout: const Duration(seconds: 1));
+      socket.destroy();
+      return true;
+    } on SocketException {
+      return false;
+    } on TimeoutException {
+      return false;
+    }
+  }
+
+  Future<bool> _showSetupDialog() async {
+    return (await showDialog<bool>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('Suno setup required'),
+              content: const Text(
+                'Chrome must run with --remote-debugging-port=9222 and you must be logged in to Suno.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    await _launchChromeRemoteDebugging();
+                    if (!context.mounted) return;
+                    Navigator.of(context).pop(true);
+                  },
+                  child: const Text('Launch Chrome'),
+                ),
+              ],
+            );
+          },
+        )) ??
+        false;
+  }
+
+  Future<bool> _showLoginDialog() async {
+    return (await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('Finish login'),
+              content: const Text(
+                'Complete login and any CAPTCHA in the Chrome window, then click Continue.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Continue'),
+                ),
+              ],
+            );
+          },
+        )) ??
+        false;
+  }
+
+  Future<void> _launchChromeRemoteDebugging() async {
+    if (!Platform.isMacOS) return;
+    final home = Platform.environment['HOME'] ?? '';
+    final chromePath =
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    await Process.start(
+      chromePath,
+      [
+        '--remote-debugging-port=9222',
+        '--user-data-dir=$home/.suno-chrome-profile',
+        '--profile-directory=Default',
+        'https://suno.com/create',
+      ],
+      runInShell: false,
+    );
+  }
+
+  Future<void> _openSunoCreatePage() async {
+    if (!Platform.isMacOS) return;
+    await Process.start(
+      'open',
+      ['-a', 'Google Chrome', 'https://suno.com/create'],
+      runInShell: false,
+    );
+  }
+
+  Future<String?> _promptSongDescription() async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Generate Audio'),
+          content: TextField(
+            controller: controller,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: 'Song Description',
+              hintText: 'Describe the song you want to create',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(context).pop(controller.text),
+              child: const Text('Generate'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    return result;
+  }
+
+  String _truncateLabel(String value) {
+    const maxLen = 40;
+    if (value.length <= maxLen) return value;
+    return value.substring(0, maxLen - 3) + '...';
+  }
+
   @override
   Widget build(BuildContext context) {
     final timeline = ref.watch(timelineProvider);
@@ -104,10 +378,8 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   Widget _buildToolbar(Timeline timeline) {
     final timelineNotifier = ref.read(timelineProvider.notifier);
     final previewState = ref.watch(previewProvider);
-    final projectState = ref.watch(projectProvider);
-    final normalizeEnabled =
-        projectState.project?.defaultExportSettings.audioNormalizeEnabled ??
-        false;
+    final groups = ref.watch(timelineGroupsProvider);
+    final activeGroup = ref.watch(activeTimelineGroupProvider);
 
     return Container(
       padding: const EdgeInsets.all(8.0),
@@ -120,6 +392,42 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
             const SizedBox(width: 16),
+            // Timeline group selector
+            DropdownButton<String>(
+              value: activeGroup?.id,
+              hint: const Text('Select Group'),
+              items: groups.map((g) => DropdownMenuItem(
+                value: g.id,
+                child: Text(g.name),
+              )).toList(),
+              onChanged: (groupId) {
+                if (groupId != null) {
+                  timelineNotifier.setActiveGroup(groupId);
+                }
+              },
+            ),
+            // Group management buttons
+            IconButton(
+              icon: const Icon(Icons.add_circle_outline),
+              onPressed: groups.length < 10 ? _showAddGroupDialog : null,
+              tooltip: 'Add Timeline Group',
+              iconSize: 20,
+            ),
+            IconButton(
+              icon: const Icon(Icons.edit),
+              onPressed: activeGroup != null ? _showRenameGroupDialog : null,
+              tooltip: 'Rename Group',
+              iconSize: 20,
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete_outline),
+              onPressed: groups.length > 1 && activeGroup != null
+                  ? () => _showDeleteGroupDialog(activeGroup.id)
+                  : null,
+              tooltip: 'Delete Group',
+              iconSize: 20,
+            ),
+            const VerticalDivider(),
             // Add track buttons
             IconButton(
               icon: const Icon(Icons.video_library),
@@ -227,19 +535,25 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
               tooltip: 'Generate Highlight',
             ),
             IconButton(
+              icon: const Icon(Icons.music_note),
+              onPressed: _generateAudioWithSuno,
+              tooltip: 'Generate Audio',
+            ),
+            IconButton(
               icon: Icon(
-                normalizeEnabled ? Icons.graphic_eq : Icons.graphic_eq_outlined,
+                previewState.audioNormalizeEnabled
+                    ? Icons.graphic_eq
+                    : Icons.graphic_eq_outlined,
+                color: previewState.audioNormalizeEnabled
+                    ? Colors.blue[400]
+                    : null,
               ),
-              onPressed: projectState.hasProject
-                  ? () {
-                      ref
-                          .read(projectProvider.notifier)
-                          .updateProjectSettings(
-                            audioNormalizeEnabled: !normalizeEnabled,
-                          );
-                    }
-                  : null,
-              tooltip: 'Audio Normalize (Export)',
+              onPressed: () {
+                ref
+                    .read(previewProvider.notifier)
+                    .setAudioNormalize(!previewState.audioNormalizeEnabled);
+              },
+              tooltip: 'Audio Normalize',
             ),
             const VerticalDivider(),
             // Zoom controls
@@ -436,12 +750,30 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
                       children: [
                         IconButton(
                           icon: Icon(
-                            track.isMuted ? Icons.volume_off : Icons.volume_up,
+                            track.isVisible ? Icons.visibility : Icons.visibility_off,
                             size: 16,
                           ),
-                          onPressed: () => _toggleTrackMute(track.id),
+                          onPressed: () => _toggleTrackVisibility(track.id),
                           padding: EdgeInsets.zero,
                           constraints: const BoxConstraints(),
+                          tooltip: track.isVisible ? 'Hide Track' : 'Show Track',
+                        ),
+                        const SizedBox(width: 4),
+                        GestureDetector(
+                          onTapDown: (details) {
+                            _showVolumePopup(context, details.globalPosition, track);
+                          },
+                          child: Container(
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 24,
+                              minHeight: 24,
+                            ),
+                            child: Icon(
+                              track.isMuted ? Icons.volume_off : Icons.volume_up,
+                              size: 16,
+                            ),
+                          ),
                         ),
                         const SizedBox(width: 4),
                         IconButton(
@@ -460,27 +792,47 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
               ),
               // Track content
               Expanded(
-                child: GestureDetector(
-                  onTapDown: (details) {
-                    final position = _globalOffsetToTimelinePosition(
+                child: DragTarget<Clip>(
+                  onAcceptWithDetails: (details) {
+                    if (track.isLocked) return;
+                    final clip = details.data;
+                    final startTime = _globalOffsetToTimelinePosition(
                       contentKey,
-                      details.globalPosition,
+                      details.offset,
                     );
-                    ref
-                        .read(timelineProvider.notifier)
-                        .setCurrentPosition(position);
-                    // Always update preview position when playhead changes
-                    ref.read(previewProvider.notifier).seekTo(position);
+                    // Move clip to this track
+                    ref.read(timelineProvider.notifier).moveClipToTrack(
+                          clip.id,
+                          track.id,
+                          startTime,
+                        );
                   },
-                  child: Container(
-                    key: contentKey,
-                    color: Colors.transparent,
-                    child: Stack(
-                      children: track.clips.map((clip) {
-                        return _buildClip(track, clip, contentKey);
-                      }).toList(),
-                    ),
-                  ),
+                  builder: (context, candidateClips, rejectedClips) {
+                    return GestureDetector(
+                      onTapDown: (details) {
+                        final position = _globalOffsetToTimelinePosition(
+                          contentKey,
+                          details.globalPosition,
+                        );
+                        ref
+                            .read(timelineProvider.notifier)
+                            .setCurrentPosition(position);
+                        // Always update preview position when playhead changes
+                        ref.read(previewProvider.notifier).seekTo(position);
+                      },
+                      child: Container(
+                        key: contentKey,
+                        color: candidateClips.isNotEmpty && !track.isLocked
+                            ? Colors.green.withValues(alpha: 0.1)
+                            : Colors.transparent,
+                        child: Stack(
+                          children: track.clips.map((clip) {
+                            return _buildClip(track, clip, contentKey);
+                          }).toList(),
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ],
@@ -518,20 +870,26 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     return Positioned(
       left: left,
       top: 4,
-      child: SizedBox(
-        width: width,
-        height: 72,
-        child: Stack(
-          children: [
+      child: Opacity(
+        opacity: (!track.isVisible || !clip.isVisible) ? 0.3 : 1.0,
+        child: SizedBox(
+          width: width,
+          height: 72,
+          child: Stack(
+            children: [
             // Visual layer (always full-width)
             Positioned.fill(
               child: IgnorePointer(
                 child: Container(
                   decoration: BoxDecoration(
-                    color: isSelected ? Colors.blue[700] : Colors.blue[900],
+                    color: isSelected
+                        ? (isAudioClip ? Colors.green[700] : Colors.blue[700])
+                        : (isAudioClip ? Colors.green[900] : Colors.blue[900]),
                     borderRadius: BorderRadius.circular(4),
                     border: Border.all(
-                      color: isSelected ? Colors.yellow : Colors.blue[700]!,
+                      color: isSelected
+                          ? Colors.yellow
+                          : (isAudioClip ? Colors.green[700]! : Colors.blue[700]!),
                       width: isSelected ? 2 : 1,
                     ),
                     image: !isAudioClip && mediaItem.thumbnail != null
@@ -746,7 +1104,9 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
                       width: width,
                       height: 72,
                       decoration: BoxDecoration(
-                        color: Colors.blue.withValues(alpha: 0.7),
+                        color: isAudioClip
+                            ? Colors.green.withValues(alpha: 0.7)
+                            : Colors.blue.withValues(alpha: 0.7),
                         borderRadius: BorderRadius.circular(4),
                         border: Border.all(color: Colors.white, width: 2),
                         image: !isAudioClip && mediaItem.thumbnail != null
@@ -867,7 +1227,8 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
                   ),
                 ),
               ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -976,6 +1337,13 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
     timelineNotifier.addClip(trackId, clip);
   }
 
+  void _toggleTrackVisibility(String trackId) {
+    final timeline = ref.read(timelineProvider);
+    final track = timeline.tracks.firstWhere((t) => t.id == trackId);
+    final updatedTrack = track.copyWith(isVisible: !track.isVisible);
+    ref.read(timelineProvider.notifier).updateTrack(updatedTrack);
+  }
+
   void _toggleTrackMute(String trackId) {
     final audioOps = ref.read(audioOperationsProvider);
     audioOps.toggleTrackMute(trackId);
@@ -984,6 +1352,58 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
   void _toggleTrackLock(String trackId) {
     final audioOps = ref.read(audioOperationsProvider);
     audioOps.toggleTrackLock(trackId);
+  }
+
+  void _updateTrackVolume(String trackId, double volume) {
+    final timeline = ref.read(timelineProvider);
+    final track = timeline.tracks.firstWhere((t) => t.id == trackId);
+    final updatedTrack = track.copyWith(volume: volume);
+    ref.read(timelineProvider.notifier).updateTrack(updatedTrack);
+  }
+
+  void _showVolumePopup(BuildContext context, Offset position, Track track) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.transparent,
+      builder: (context) {
+        return Stack(
+          children: [
+            // Invisible barrier to close on outside click
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: () => Navigator.of(context).pop(),
+                child: Container(color: Colors.transparent),
+              ),
+            ),
+            // Volume control popup
+            Positioned(
+              left: position.dx - 80,
+              top: position.dy + 10,
+              child: Material(
+                elevation: 8,
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[850],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: _VolumeControl(
+                    track: track,
+                    onVolumeChanged: (value) {
+                      _updateTrackVolume(track.id, value);
+                    },
+                    onMuteToggle: () {
+                      _toggleTrackMute(track.id);
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _togglePlayback() {
@@ -1238,7 +1658,31 @@ class _TimelinePanelState extends ConsumerState<TimelinePanel> {
             );
 
             if (!mounted) return;
-            ref.read(timelineProvider.notifier).loadTimeline(highlightTimeline);
+
+            // Handle destination
+            if (request.destination == HighlightDestination.newGroup) {
+              // Create new group with generated timeline
+              final groupName = request.newGroupName ?? 'ハイライト ${request.pattern.name}';
+              try {
+                ref.read(timelineProvider.notifier).addGroup(groupName);
+                // New group becomes active automatically, then load timeline
+                ref.read(timelineProvider.notifier).loadTimeline(highlightTimeline);
+              } catch (e) {
+                // Group limit reached
+                if (!mounted) return;
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(this.context).showSnackBar(
+                  SnackBar(content: Text('Failed to create group: $e')),
+                );
+                return;
+              }
+            } else {
+              // Replace active group's timeline
+              ref.read(timelineProvider.notifier).loadTimeline(highlightTimeline);
+            }
+
+            ref.read(projectProvider.notifier).markAsModified();
+
             progressNotifier.value = const HighlightGenerationProgress(
               HighlightGenerationStage.done,
             );
@@ -1569,6 +2013,121 @@ class _TimeRulerPainter extends CustomPainter {
   }
 }
 
+/// Timeline panel dialog methods (moved to _TimelinePanelState)
+extension _TimelinePanelDialogs on _TimelinePanelState {
+  /// Show dialog to add a new timeline group
+  Future<void> _showAddGroupDialog() async {
+    final controller = TextEditingController(text: 'New Group');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add Timeline Group'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(labelText: 'Group Name'),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.trim().isNotEmpty) {
+      try {
+        ref.read(timelineProvider.notifier).addGroup(result.trim());
+        ref.read(projectProvider.notifier).markAsModified();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to add group: $e')),
+          );
+        }
+      }
+    }
+  }
+
+  /// Show dialog to rename the active timeline group
+  Future<void> _showRenameGroupDialog() async {
+    final activeGroup = ref.read(activeTimelineGroupProvider);
+    if (activeGroup == null) return;
+
+    final controller = TextEditingController(text: activeGroup.name);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename Timeline Group'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(labelText: 'Group Name'),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && result.trim().isNotEmpty && result.trim() != activeGroup.name) {
+      ref.read(timelineProvider.notifier).renameGroup(activeGroup.id, result.trim());
+      ref.read(projectProvider.notifier).markAsModified();
+    }
+  }
+
+  /// Show confirmation dialog to delete a timeline group
+  Future<void> _showDeleteGroupDialog(String groupId) async {
+    final groups = ref.read(timelineGroupsProvider);
+    final group = groups.where((g) => g.id == groupId).firstOrNull;
+    if (group == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Timeline Group'),
+        content: Text('Are you sure you want to delete "${group.name}"? This cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        ref.read(timelineProvider.notifier).removeGroup(groupId);
+        ref.read(projectProvider.notifier).markAsModified();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to delete group: $e')),
+          );
+        }
+      }
+    }
+  }
+}
+
 class _WaveformPainter extends CustomPainter {
   final List<double> waveform;
 
@@ -1598,5 +2157,85 @@ class _WaveformPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _WaveformPainter oldDelegate) {
     return oldDelegate.waveform != waveform;
+  }
+}
+
+/// Volume control widget for track volume adjustment
+class _VolumeControl extends StatefulWidget {
+  final Track track;
+  final ValueChanged<double> onVolumeChanged;
+  final VoidCallback onMuteToggle;
+
+  const _VolumeControl({
+    required this.track,
+    required this.onVolumeChanged,
+    required this.onMuteToggle,
+  });
+
+  @override
+  State<_VolumeControl> createState() => _VolumeControlState();
+}
+
+class _VolumeControlState extends State<_VolumeControl> {
+  late double _currentVolume;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentVolume = widget.track.volume;
+  }
+
+  @override
+  void didUpdateWidget(_VolumeControl oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.track.volume != oldWidget.track.volume) {
+      _currentVolume = widget.track.volume;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: Icon(
+                widget.track.isMuted ? Icons.volume_off : Icons.volume_up,
+                size: 18,
+              ),
+              onPressed: widget.onMuteToggle,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              tooltip: widget.track.isMuted ? 'Unmute' : 'Mute',
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${(_currentVolume * 100).round()}%',
+              style: const TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: 150,
+          child: Slider(
+            value: _currentVolume,
+            min: 0.0,
+            max: 1.0,
+            divisions: 20,
+            label: '${(_currentVolume * 100).round()}%',
+            onChanged: (value) {
+              setState(() {
+                _currentVolume = value;
+              });
+              widget.onVolumeChanged(value);
+            },
+          ),
+        ),
+      ],
+    );
   }
 }

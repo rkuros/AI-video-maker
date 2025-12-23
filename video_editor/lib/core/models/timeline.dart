@@ -54,9 +54,9 @@ class Timeline {
     );
   }
 
-  /// Add a track to the timeline
+  /// Add a track to the timeline (prepends to the list so it appears on top)
   Timeline addTrack(Track track) {
-    return copyWith(tracks: [...tracks, track]);
+    return copyWith(tracks: [track, ...tracks]);
   }
 
   /// Remove a track from the timeline

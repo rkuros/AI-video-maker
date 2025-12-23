@@ -14,6 +14,7 @@ Track _$TrackFromJson(Map<String, dynamic> json) => Track(
       .toList(),
   isLocked: json['isLocked'] as bool? ?? false,
   isMuted: json['isMuted'] as bool? ?? false,
+  isVisible: json['isVisible'] as bool? ?? true,
   name: json['name'] as String?,
   volume: (json['volume'] as num?)?.toDouble() ?? 1.0,
 );
@@ -24,6 +25,7 @@ Map<String, dynamic> _$TrackToJson(Track instance) => <String, dynamic>{
   'clips': instance.clips,
   'isLocked': instance.isLocked,
   'isMuted': instance.isMuted,
+  'isVisible': instance.isVisible,
   'name': instance.name,
   'volume': instance.volume,
 };

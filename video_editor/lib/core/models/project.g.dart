@@ -15,9 +15,10 @@ Project _$ProjectFromJson(Map<String, dynamic> json) => Project(
   updatedAt: json['updatedAt'] == null
       ? null
       : DateTime.parse(json['updatedAt'] as String),
-  timeline: json['timeline'] == null
-      ? null
-      : Timeline.fromJson(json['timeline'] as Map<String, dynamic>),
+  timelineGroups: (json['timelineGroups'] as List<dynamic>?)
+      ?.map((e) => TimelineGroup.fromJson(e as Map<String, dynamic>))
+      .toList(),
+  activeTimelineGroupId: json['activeTimelineGroupId'] as String?,
   mediaLibrary: (json['mediaLibrary'] as List<dynamic>?)
       ?.map((e) => MediaItem.fromJson(e as Map<String, dynamic>))
       .toList(),
@@ -36,7 +37,8 @@ Map<String, dynamic> _$ProjectToJson(Project instance) => <String, dynamic>{
   'name': instance.name,
   'createdAt': instance.createdAt.toIso8601String(),
   'updatedAt': instance.updatedAt.toIso8601String(),
-  'timeline': instance.timeline,
+  'timelineGroups': instance.timelineGroups,
+  'activeTimelineGroupId': instance.activeTimelineGroupId,
   'mediaLibrary': instance.mediaLibrary,
   'defaultExportSettings': instance.defaultExportSettings,
   'maxDuration': instance.maxDuration?.inMicroseconds,

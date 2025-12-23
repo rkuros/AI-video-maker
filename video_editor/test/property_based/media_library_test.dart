@@ -197,8 +197,8 @@ void main() {
         final initialCount = service.items.length;
 
         // Attempt to import unsupported file
-        expect(
-          () async => await service.importFile(filePath),
+        await expectLater(
+          service.importFile(filePath),
           throwsA(isA<UnsupportedFileFormatException>()),
           reason: 'Unsupported file should throw exception',
         );
